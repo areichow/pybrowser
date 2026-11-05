@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pybrowser"
+version = "0.2.0"
+description = "Smalltalk-inspired Python class browser"
+requires-python = ">=3.14"
+dependencies = ["PySide6>=6.8", "libcst>=1.5"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+pybrowser = "pybrowser.app:main"
+
+[tool.setuptools.packages.find]
+include = ["pybrowser*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
