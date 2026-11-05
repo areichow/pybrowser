@@ -116,7 +116,7 @@ def add_method(document: Document, scope: str, name: str, category: str, method_
 
 def delete_member(document: Document, member: Member) -> StructuralEdit:
     if member.synthetic:
-        raise StructuralEditError("Select an individual entity before deleting")
+        raise StructuralEditError("Select an individual Member before deleting")
     directive = _category_directive_span(document, member)
     start = directive[0] if directive else member.span.start
     text = document.text[:start] + document.text[member.span.end:]
@@ -126,7 +126,7 @@ def delete_member(document: Document, member: Member) -> StructuralEdit:
 
 def duplicate_member(document: Document, member: Member) -> StructuralEdit:
     if member.synthetic:
-        raise StructuralEditError("Select an individual entity before duplicating")
+        raise StructuralEditError("Select an individual Member before duplicating")
     source = document.source(member)
     text = document.text[:member.span.end] + document.newline + source + document.text[member.span.end:]
     return StructuralEdit(text, member.scope, member.category, member.label)
@@ -134,7 +134,7 @@ def duplicate_member(document: Document, member: Member) -> StructuralEdit:
 
 def move_member(document: Document, member: Member, category: str) -> StructuralEdit:
     if member.synthetic:
-        raise StructuralEditError("Select an individual entity before moving it")
+        raise StructuralEditError("Select an individual Member before moving it")
     category = category.strip()
     if not category:
         raise StructuralEditError("Category cannot be empty")
@@ -188,7 +188,7 @@ def convert_method_kind(document: Document, member: Member, method_kind: str) ->
     lines = source.splitlines()
     def_index = next((i for i, line in enumerate(lines) if re.match(r"\s*(?:async\s+)?def\s+", line)), None)
     if def_index is None:
-        raise StructuralEditError("Selected entity is not a method")
+        raise StructuralEditError("Selected Member is not a method")
     indent = lines[def_index][: len(lines[def_index]) - len(lines[def_index].lstrip())]
     lines = [line for line in lines if line.strip() not in {"@staticmethod", "@classmethod", "@property"}]
     def_index = next(i for i, line in enumerate(lines) if re.match(r"\s*(?:async\s+)?def\s+", line))

@@ -11,7 +11,7 @@ class ReplaceDialog(QDialog):
 
     def __init__(self, parent=None, initial=""):
         super().__init__(parent)
-        self.setWindowTitle("Replace in Current Entity")
+        self.setWindowTitle("Replace in Current Member")
         self.find_text = QLineEdit(initial)
         self.replace_text = QLineEdit()
         self.case_sensitive = QCheckBox("Case sensitive")

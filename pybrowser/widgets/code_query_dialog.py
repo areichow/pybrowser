@@ -1,14 +1,14 @@
 from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import QDialog, QLabel, QListWidget, QMessageBox, QSplitter, QVBoxLayout
+from PySide6.QtWidgets import QLabel, QListWidget, QMainWindow, QMessageBox, QSplitter, QVBoxLayout, QWidget
 from .editor import Editor
 from ..parser import ParseError, read_document, replacement, validate
 from ..saving import atomic_write, changed
-from ..window_commands import install_window_commands
+from ..windowing import install_window_commands
 
 
-class CodeQueryDialog(QDialog):
+class CodeQueryDialog(QMainWindow):
     navigate_requested = Signal(object)
 
     def __init__(self, title, results, workspace, parent=None):
@@ -16,6 +16,7 @@ class CodeQueryDialog(QDialog):
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.workspace = workspace
+        self.workspace.register(self, "query")
         self.results_data = list(results)
         self.current_document = None
         self.current_member = None
@@ -29,15 +30,18 @@ class CodeQueryDialog(QDialog):
         self.preview.browse_class_requested.connect(self.workspace.request_class_browser)
         self.preview.modificationChanged.connect(self._modified_changed)
         split = QSplitter(Qt.Orientation.Vertical); split.addWidget(self.results); split.addWidget(self.preview); split.setSizes([210, 440])
-        layout = QVBoxLayout(self); layout.addWidget(self.summary); layout.addWidget(self.edit_status); layout.addWidget(split)
+        central = QWidget()
+        layout = QVBoxLayout(central); layout.addWidget(self.summary); layout.addWidget(self.edit_status); layout.addWidget(split)
+        self.setCentralWidget(central)
         self.results.currentRowChanged.connect(self._preview)
         self.results.itemDoubleClicked.connect(lambda _item: self._navigate())
         self.workspace.file_changed.connect(self._workspace_changed)
         save = QAction("Save", self); save.setShortcut(QKeySequence.StandardKey.Save); save.triggered.connect(self.save)
         abandon = QAction("Abandon", self); abandon.setShortcut("Ctrl+L"); abandon.triggered.connect(self.abandon)
         self.addActions([save, abandon])
-        file_menu = self.menuBar().addMenu("&File") if hasattr(self, "menuBar") else None
-        install_window_commands(self, file_menu)
+        file_menu = self.menuBar().addMenu("&File")
+        file_menu.addActions([save, abandon])
+        install_window_commands(self, self.workspace, file_menu)
         if self.results.count(): self.results.setCurrentRow(0)
 
     def _modified_changed(self, modified):
@@ -59,7 +63,7 @@ class CodeQueryDialog(QDialog):
 
     def _preview(self, row):
         if self.preview.document().isModified():
-            answer = QMessageBox.question(self, "Abandon changes?", "Do you want to abandon changes to this entity?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            answer = QMessageBox.question(self, "Abandon changes?", "Do you want to abandon changes to this Member?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
             if answer == QMessageBox.StandardButton.No: return
         if not (0 <= row < len(self.results_data)): return
         result = self.results_data[row]

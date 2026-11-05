@@ -35,7 +35,7 @@ from .widgets.typecheck_preferences import TypeCheckPreferencesDialog
 from .typecheck_worker import TypeCheckSignals, TypeCheckTask
 from .theme import apply_theme
 from .conventions import category_sort_key, display_scope, is_special_category
-from .window_commands import install_window_commands
+from .windowing import install_window_commands
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
 from PySide6.QtWidgets import QTextEdit
@@ -46,7 +46,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.doc = None
         self.workspace = workspace or Workspace()
-        self.workspace.register(self)
+        self.workspace.register(self, "browser")
         self.workspace.file_changed.connect(self._workspace_file_changed)
         self.world: World | None = self.workspace.world
         self.child_windows = []
@@ -135,9 +135,9 @@ class MainWindow(QMainWindow):
         self.find_text.setClearButtonEnabled(True)
         self.find_text.returnPressed.connect(self.execute_find)
         self.find_text.textChanged.connect(self._search_text_changed)
-        self.current_entity_only = QCheckBox("Current method/entity only")
-        self.current_entity_only.setChecked(True)
-        self.current_entity_only.toggled.connect(self._search_scope_changed)
+        self.current_member_only = QCheckBox("Current Member only")
+        self.current_member_only.setChecked(True)
+        self.current_member_only.toggled.connect(self._search_scope_changed)
         self.match_indicator = QLabel("0 matches")
         self.match_indicator.setMinimumWidth(90)
         find_bar = QWidget()
@@ -145,7 +145,7 @@ class MainWindow(QMainWindow):
         find_layout.setContentsMargins(6, 4, 6, 4)
         find_layout.addWidget(QLabel("Find:"))
         find_layout.addWidget(self.find_text, 1)
-        find_layout.addWidget(self.current_entity_only)
+        find_layout.addWidget(self.current_member_only)
         find_layout.addWidget(self.match_indicator)
 
         self.crumb = QLabel("Open a Python file to begin")
@@ -194,7 +194,7 @@ class MainWindow(QMainWindow):
         next_action = QAction("Find Next", self)
         next_action.setShortcut("Ctrl+G")
         next_action.triggered.connect(self.find_next)
-        replace_action = QAction("Replace in Current Entity", self)
+        replace_action = QAction("Replace in Current Member", self)
         replace_action.setShortcut("Ctrl+H")
         replace_action.triggered.connect(self.show_replace_dialog)
         comment_action = QAction("Toggle Comment", self)
@@ -213,7 +213,7 @@ class MainWindow(QMainWindow):
         new_browser_action = QAction("New Browser", self)
         new_browser_action.setShortcut("Ctrl+Shift+B")
         new_browser_action.triggered.connect(self.new_browser)
-        abandon_action = QAction("Abandon Entity Changes", self)
+        abandon_action = QAction("Abandon Member Changes", self)
         abandon_action.setShortcut("Ctrl+L")
         abandon_action.triggered.connect(self.abandon_changes)
         quick_module_action = QAction("Quick Open Module", self)
@@ -258,9 +258,9 @@ class MainWindow(QMainWindow):
             ("New Function...", self.new_function), ("New Class...", self.new_class),
             ("New Method...", self.new_method),
             ("Rename Category...", self.rename_current_category),
-            ("Move Entity to Category...", self.move_current_member),
-            ("Duplicate Entity", self.duplicate_current_member),
-            ("Delete Entity...", self.delete_current_member),
+            ("Move Member to Category...", self.move_current_member),
+            ("Duplicate Member", self.duplicate_current_member),
+            ("Delete Member...", self.delete_current_member),
         ]
         for title, callback in commands:
             action = structure_menu.addAction(title)
@@ -275,7 +275,7 @@ class MainWindow(QMainWindow):
         navigate_menu = self.menuBar().addMenu("&Navigate")
         navigate_menu.addActions([quick_module_action, quick_symbol_action, back_action, forward_action, goto_action])
         self.addActions([open_action, save_action, find_action, next_action, replace_action, abandon_action, new_browser_action, typecheck_action, quick_module_action, quick_symbol_action, project_find_action, back_action, forward_action, goto_action])
-        install_window_commands(self, file_menu)
+        install_window_commands(self, self.workspace, file_menu)
 
     def _typecheck_preferences(self):
         return {
@@ -300,7 +300,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Type Check", "Open a Python file or directory world first.")
             return
         if self.editor.document().isModified():
-            QMessageBox.information(self, "Type Check", "Save or abandon the current entity changes before type checking.")
+            QMessageBox.information(self, "Type Check", "Save or abandon the current Member changes before type checking.")
             return
         values = self._typecheck_preferences()
         target = self.world.modules[0].path if self.world.single_file else self.world.root
@@ -432,10 +432,10 @@ class MainWindow(QMainWindow):
         if not query:
             self._search_text_changed()
             return
-        if self.current_entity_only.isChecked():
+        if self.current_member_only.isChecked():
             source = self.editor.toPlainText()
             self.search_matches = find_all(source, query)
-            self.search_source = "entity"
+            self.search_source = "member"
         elif self.doc:
             source = self._candidate_document_text()
             self.search_matches = find_all(source, query)
@@ -452,7 +452,7 @@ class MainWindow(QMainWindow):
         if not query:
             self.focus_find()
             return
-        expected_source = "entity" if self.current_entity_only.isChecked() else "file"
+        expected_source = "member" if self.current_member_only.isChecked() else "file"
         if not self.search_matches or self.search_source != expected_source:
             self.execute_find()
             return
@@ -473,7 +473,7 @@ class MainWindow(QMainWindow):
         if self.search_source == "file":
             member = self._member_for_file_offset(match.start)
             if member is None:
-                self.statusBar().showMessage("Match is inside a class declaration not exposed as an editable entity", 5000)
+                self.statusBar().showMessage("Match is inside a class declaration not exposed as an editable Member", 5000)
                 self._update_match_indicator()
                 return
             if member != self.member:
@@ -545,7 +545,7 @@ class MainWindow(QMainWindow):
         modified = self.editor.document().isModified()
         self.setWindowModified(modified)
         self._update_modified_indicator(modified)
-        if self.find_text.text() and self.current_entity_only.isChecked():
+        if self.find_text.text() and self.current_member_only.isChecked():
             self.execute_find()
         elif self.search_source:
             self._search_text_changed()
@@ -553,7 +553,7 @@ class MainWindow(QMainWindow):
     def _confirm_discard(self):
         if not self.editor.document().isModified():
             return True
-        name = self.member.label if self.member else "this entity"
+        name = self.member.label if self.member else "this Member"
         answer = QMessageBox.question(
             self,
             "Abandon unsaved changes?",
@@ -566,13 +566,13 @@ class MainWindow(QMainWindow):
             return True
         self._restore_current_browser_selection()
         self.editor.setFocus()
-        self.statusBar().showMessage("Navigation cancelled; unsaved changes remain in the current entity", 4000)
+        self.statusBar().showMessage("Navigation cancelled; unsaved changes remain in the current Member", 4000)
         return False
 
     def abandon_changes(self):
-        """Restore the selected entity from the last parsed on-disk document."""
+        """Restore the selected Member from the last parsed on-disk document."""
         if not self.doc or not self.member or not self.editor.document().isModified():
-            self.statusBar().showMessage("No entity changes to abandon", 3000)
+            self.statusBar().showMessage("No Member changes to abandon", 3000)
             return
         cursor_position = self.editor.textCursor().position()
         self.loading = True
@@ -605,7 +605,7 @@ class MainWindow(QMainWindow):
 
         Selection-change signals fire after Qt has already moved the visual selection.
         Rebuild the dependent panes under signal blockers so answering No can never
-        leave the browser on a different scope, category, or entity.
+        leave the browser on a different scope, category, or Member.
         """
         if not self.doc or not self.member:
             return
@@ -644,7 +644,7 @@ class MainWindow(QMainWindow):
             self.categories.setCurrentRow(category_index)
             del blocker
 
-            # Rebuild members for the restored category and select the exact entity.
+            # Rebuild members for the restored category and select the exact Member.
             visible = [item for item in self.scope.members if item.category == target.category]
             blocker = QSignalBlocker(self.members)
             self.members.clear()
@@ -935,7 +935,7 @@ class MainWindow(QMainWindow):
         self.loading = False
         self.setWindowModified(False)
         self._update_modified_indicator(False)
-        if self.find_text.text() and self.current_entity_only.isChecked():
+        if self.find_text.text() and self.current_member_only.isChecked():
             self.execute_find()
         if member and not self.navigating_history:
             self.history.visit(self._current_location())
@@ -1076,7 +1076,7 @@ class MainWindow(QMainWindow):
         try:
             self._apply_structural_edit(move_member(self.doc, member, category), f"Moved {member.label} to {category}")
         except StructuralEditError as exc:
-            QMessageBox.warning(self, "Cannot move entity", str(exc))
+            QMessageBox.warning(self, "Cannot move Member", str(exc))
 
     def new_browser(self):
         if not self.world:
@@ -1332,23 +1332,23 @@ class MainWindow(QMainWindow):
     def move_current_member(self):
         if not self.doc or not self.member:
             return
-        category, ok = QInputDialog.getText(self, "Move Entity", "Destination category:", text=self.member.category)
+        category, ok = QInputDialog.getText(self, "Move Member", "Destination category:", text=self.member.category)
         if ok:
-            try: self._apply_structural_edit(move_member(self.doc, self.member, category), f"Moved entity to {category}")
-            except StructuralEditError as exc: QMessageBox.warning(self, "Cannot move entity", str(exc))
+            try: self._apply_structural_edit(move_member(self.doc, self.member, category), f"Moved Member to {category}")
+            except StructuralEditError as exc: QMessageBox.warning(self, "Cannot move Member", str(exc))
 
     def duplicate_current_member(self):
         if self.doc and self.member:
-            try: self._apply_structural_edit(duplicate_member(self.doc, self.member), "Duplicated entity")
-            except StructuralEditError as exc: QMessageBox.warning(self, "Cannot duplicate entity", str(exc))
+            try: self._apply_structural_edit(duplicate_member(self.doc, self.member), "Duplicated Member")
+            except StructuralEditError as exc: QMessageBox.warning(self, "Cannot duplicate Member", str(exc))
 
     def delete_current_member(self):
         if not self.doc or not self.member:
             return
-        answer = QMessageBox.question(self, "Delete Entity", f"Delete {self.member.label}? This writes immediately to disk.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        answer = QMessageBox.question(self, "Delete Member", f"Delete {self.member.label}? This writes immediately to disk.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
         if answer == QMessageBox.StandardButton.Yes:
             try: self._apply_structural_edit(delete_member(self.doc, self.member), f"Deleted {self.member.label}")
-            except StructuralEditError as exc: QMessageBox.warning(self, "Cannot delete entity", str(exc))
+            except StructuralEditError as exc: QMessageBox.warning(self, "Cannot delete Member", str(exc))
 
     def convert_current_method(self, kind):
         if self.doc and self.member:

@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox
 from .editor import Editor
 from ..parser import ParseError, read_document, validate
 from ..saving import atomic_write, changed
-from ..window_commands import install_window_commands
+from ..windowing import install_window_commands
 
 
 class FileViewWindow(QMainWindow):
@@ -14,6 +14,7 @@ class FileViewWindow(QMainWindow):
         super().__init__(None)
         self.path = Path(path).resolve()
         self.workspace = workspace
+        self.workspace.register(self, "file-view")
         self.document_model = read_document(self.path)
         self.editor = Editor()
         self.setCentralWidget(self.editor)
@@ -29,7 +30,7 @@ class FileViewWindow(QMainWindow):
         self.addActions([save, abandon])
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addActions([save, abandon])
-        install_window_commands(self, file_menu)
+        install_window_commands(self, self.workspace, file_menu)
         self.goto_line(line)
 
     def goto_line(self, line):

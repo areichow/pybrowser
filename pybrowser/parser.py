@@ -45,7 +45,7 @@ def _directive_before(text: str, start_line: int, lower_bound: int) -> tuple[str
     return None, None
 
 def _span_start(text: str, node_start: int, lower_bound: int) -> int:
-    # Category directives are browser metadata. Keep them outside the entity's
+    # Category directives are browser metadata. Keep them outside the Member's
     # editable source span so the code editor starts at decorators/def/class.
     return node_start
 
