@@ -1,0 +1,2 @@
+@REM py -3.14 -m pip install -e .[dev]
+@py -3.14 -m pybrowser
