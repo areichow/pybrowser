@@ -1,84 +1,254 @@
 from __future__ import annotations
-import ast, io, re, tokenize
+import ast
+import io
+import re
+import tokenize
 from pathlib import Path
 import libcst as cst
 from libcst.metadata import MetadataWrapper, PositionProvider
 from .model import Document, Kind, Member, Scope, Span
 from .saving import file_signature
 
-CATEGORY_RE=re.compile(r"^[ \t]*#[ \t]*category[ \t]*:[ \t]*(?P<name>[^\r\n#]+?)[ \t]*$",re.I)
-class ParseError(ValueError):
-    def __init__(self,message,line=None,column=None): super().__init__(message); self.line=line; self.column=column
+CATEGORY_RE = re.compile(r"^[ \t]*#[ \t]*category[ \t]*:[ \t]*(?P<name>[^\r\n#]+?)[ \t]*$", re.I)
 
-def _starts(text):
-    out=[0]; out.extend(m.end() for m in re.finditer("\n",text)); return out
-def _end(text,starts,line): return starts[line] if line<len(starts) else len(text)
-def _node_start(node,pos,positions):
-    dec=getattr(node,"decorators",()); return positions[dec[0]].start.line if dec else pos.start.line
-def _directive(text,start,lower):
-    lines=text.splitlines(); i=start-1
-    while i>=lower:
-        value=lines[i-1]; match=CATEGORY_RE.match(value)
-        if match:return match.group("name").strip(),i
-        s=value.strip()
-        if s and not s.startswith(("#","@")):break
-        i-=1
-    return None,None
-def _span_start(text,start):
-    _,line=_directive(text,start,1); return line or start
-def _main(node): return cst.Module([]).code_for_node(node.test).replace(" ","") in {'__name__=="__main__"',"__name__=='__main__'"}
-def _inferred(node,in_class):
-    if isinstance(node,cst.SimpleStatementLine):
-        if node.body and all(isinstance(x,(cst.Import,cst.ImportFrom)) for x in node.body):return "Imports"
-        if len(node.body)==1 and isinstance(node.body[0],(cst.Assign,cst.AnnAssign,cst.AugAssign)):return "Variables"
-    if isinstance(node,cst.FunctionDef):return "Uncategorized" if in_class else "Functions"
-    if isinstance(node,cst.If) and _main(node):return "Runnable"
-    return "Code"
-def _assignment(node):
-    target=node.targets[0].target if isinstance(node,cst.Assign) else node.target
-    return cst.Module([]).code_for_node(target).strip()
-def _member(text,node,scope,category,positions,starts,in_class):
-    pos=positions[node]; first=_span_start(text,_node_start(node,pos,positions)); span=Span(starts[first-1],_end(text,starts,pos.end.line),first,pos.end.line)
-    if isinstance(node,cst.SimpleStatementLine):
-        if node.body and all(isinstance(x,(cst.Import,cst.ImportFrom)) for x in node.body): return Member(scope,category,text[span.start:span.end].splitlines()[0].strip(),Kind.IMPORTS,span)
-        if len(node.body)==1 and isinstance(node.body[0],(cst.Assign,cst.AnnAssign,cst.AugAssign)): return Member(scope,category,_assignment(node.body[0]),Kind.ASSIGNMENT,span)
-        return Member(scope,category,text[span.start:span.end].splitlines()[0].strip() or f"statement at line {first}",Kind.STATEMENT,span)
-    if isinstance(node,cst.FunctionDef):
-        params=cst.Module([]).code_for_node(node.params).strip(); prefix="async " if node.asynchronous else ""
-        return Member(scope,category,f"{prefix}{node.name.value}{params}",Kind.METHOD if in_class else Kind.FUNCTION,span)
-    if isinstance(node,cst.If) and _main(node): return Member(scope,category,'if __name__ == "__main__"',Kind.MAIN,span)
-    return Member(scope,category,f"{type(node).__name__} at line {first}",Kind.BLOCK,span)
-def _group(items,text):
-    out=[]
+class ParseError(ValueError):
+    def __init__(self, message: str, line: int | None = None, column: int | None = None):
+        super().__init__(message)
+        self.line = line
+        self.column = column
+
+def _line_starts(text: str) -> list[int]:
+    values = [0]
+    values.extend(match.end() for match in re.finditer("\n", text))
+    return values
+
+def _line_end(text: str, starts: list[int], line: int) -> int:
+    return starts[line] if line < len(starts) else len(text)
+
+def _node_start(node, position, positions) -> int:
+    decorators = getattr(node, "decorators", ())
+    return positions[decorators[0]].start.line if decorators else position.start.line
+
+def _directive_before(text: str, start_line: int, lower_bound: int) -> tuple[str | None, int | None]:
+    lines = text.splitlines()
+    index = start_line - 1
+    while index >= lower_bound:
+        value = lines[index - 1]
+        match = CATEGORY_RE.match(value)
+        if match:
+            return match.group("name").strip(), index
+        stripped = value.strip()
+        if stripped and not stripped.startswith(("#", "@")):
+            break
+        index -= 1
+    return None, None
+
+def _span_start(text: str, node_start: int, lower_bound: int) -> int:
+    _, directive_line = _directive_before(text, node_start, lower_bound)
+    return directive_line or node_start
+
+def _code(node) -> str:
+    return cst.Module([]).code_for_node(node).strip()
+
+def _is_main_guard(node) -> bool:
+    if not isinstance(node, cst.If):
+        return False
+    return _code(node.test).replace(" ", "") in {'__name__=="__main__"', "__name__=='__main__'"}
+
+def _is_docstring(node) -> bool:
+    if not isinstance(node, cst.SimpleStatementLine) or len(node.body) != 1:
+        return False
+    expression = node.body[0]
+    return isinstance(expression, cst.Expr) and isinstance(expression.value, (cst.SimpleString, cst.ConcatenatedString))
+
+def _assignment_target(node) -> str:
+    target = node.targets[0].target if isinstance(node, cst.Assign) else node.target
+    return _code(target)
+
+def _inferred_category(node, in_class: bool) -> str:
+    if _is_docstring(node):
+        return "Documentation"
+    if isinstance(node, cst.SimpleStatementLine):
+        if node.body and all(isinstance(item, (cst.Import, cst.ImportFrom)) for item in node.body):
+            return "Imports"
+        if len(node.body) == 1 and isinstance(node.body[0], (cst.Assign, cst.AnnAssign, cst.AugAssign)):
+            name = _assignment_target(node.body[0])
+            if name == "__all__":
+                return "Module Metadata"
+            if name.isupper():
+                return "Constants"
+            return "Class Variables" if in_class else "Variables"
+    type_alias = getattr(cst, "TypeAlias", None)
+    if type_alias and isinstance(node, type_alias):
+        return "Types"
+    if isinstance(node, cst.FunctionDef):
+        return "Uncategorized" if in_class else "Functions"
+    if _is_main_guard(node):
+        return "Runnable"
+    return "Executable Code"
+
+def _function_label(node: cst.FunctionDef) -> str:
+    prefix = "async " if node.asynchronous else ""
+    label = f"{prefix}{node.name.value}{_code(node.params)}"
+    decorators = {_code(item.decorator) for item in node.decorators}
+    if "property" in decorators:
+        label += " [property]"
+    elif any(item.endswith(".setter") for item in decorators):
+        label += " [setter]"
+    elif "classmethod" in decorators:
+        label += " [classmethod]"
+    elif "staticmethod" in decorators:
+        label += " [staticmethod]"
+    elif "overload" in decorators or "typing.overload" in decorators:
+        label += " [overload]"
+    return label
+
+def _short(value: str, limit: int = 100) -> str:
+    one_line = " ".join(value.split())
+    return one_line if len(one_line) <= limit else one_line[: limit - 1] + "…"
+
+def _compound(node) -> tuple[Kind, str, str]:
+    if isinstance(node, cst.If):
+        condition = _code(node.test)
+        return Kind.IF, f"if {_short(condition)}", f"if {condition}"
+    if isinstance(node, cst.For):
+        prefix = "async " if node.asynchronous is not None else ""
+        full = f"{prefix}for {_code(node.target)} in {_code(node.iter)}"
+        return Kind.FOR, _short(full), full
+    if isinstance(node, cst.While):
+        full = f"while {_code(node.test)}"
+        return Kind.WHILE, _short(full), full
+    if isinstance(node, cst.With):
+        prefix = "async " if node.asynchronous is not None else ""
+        full = prefix + "with " + ", ".join(_code(item.item) for item in node.items)
+        return Kind.WITH, _short(full), full
+    if isinstance(node, (cst.Try, getattr(cst, "TryStar", cst.Try))):
+        names = []
+        for handler in node.handlers:
+            names.append(_code(handler.type) if handler.type else "bare")
+        full = "try / except " + ", ".join(names) if names else "try / finally"
+        return Kind.TRY, _short(full), full
+    if isinstance(node, cst.Match):
+        full = f"match {_code(node.subject)}"
+        return Kind.MATCH, _short(full), full
+    return Kind.STATEMENT, type(node).__name__, type(node).__name__
+
+def _make_member(text, node, scope, category, positions, starts, in_class, lower_bound) -> Member:
+    position = positions[node]
+    first = _span_start(text, _node_start(node, position, positions), lower_bound)
+    span = Span(starts[first - 1], _line_end(text, starts, position.end.line), first, position.end.line)
+    tooltip = text[span.start:span.end].splitlines()[0].strip()
+    if _is_docstring(node):
+        return Member(scope, category, "module docstring" if scope == "<module>" else "class docstring", Kind.DOCUMENTATION, span, tooltip=tooltip)
+    if isinstance(node, cst.SimpleStatementLine):
+        if node.body and all(isinstance(item, (cst.Import, cst.ImportFrom)) for item in node.body):
+            return Member(scope, category, _short(tooltip), Kind.IMPORTS, span, tooltip=tooltip)
+        if len(node.body) == 1 and isinstance(node.body[0], (cst.Assign, cst.AnnAssign, cst.AugAssign)):
+            target = _assignment_target(node.body[0])
+            return Member(scope, category, target, Kind.ASSIGNMENT, span, tooltip=tooltip)
+        return Member(scope, category, _short(tooltip) or f"statement at line {first}", Kind.STATEMENT, span, tooltip=tooltip)
+    type_alias = getattr(cst, "TypeAlias", None)
+    if type_alias and isinstance(node, type_alias):
+        name = _code(node.name)
+        return Member(scope, category, name, Kind.TYPE_ALIAS, span, tooltip=tooltip)
+    if isinstance(node, cst.FunctionDef):
+        return Member(scope, category, _function_label(node), Kind.METHOD if in_class else Kind.FUNCTION, span, tooltip=tooltip)
+    if _is_main_guard(node):
+        return Member(scope, category, 'if __name__ == "__main__"', Kind.MAIN, span, tooltip=tooltip)
+    kind, label, full = _compound(node)
+    return Member(scope, category, label, kind, span, tooltip=full)
+
+def _group_imports(items: list[Member], text: str) -> list[Member]:
+    grouped: list[Member] = []
     for item in items:
-        if out and item.kind==out[-1].kind==Kind.IMPORTS and item.category==out[-1].category and not text[out[-1].span.end:item.span.start].strip():
-            prev=out.pop(); span=Span(prev.span.start,item.span.end,prev.span.first,item.span.last); out.append(Member(item.scope,item.category,f"imports: lines {span.first}-{span.last}",Kind.IMPORTS,span))
-        else:out.append(item)
-    return out
-def build_index(path:Path,text:str)->tuple[Scope,...]:
-    try:module=cst.parse_module(text)
-    except cst.ParserSyntaxError as e:raise ParseError(str(e),getattr(e,"raw_line",None),getattr(e,"raw_column",None)) from e
-    wrapper=MetadataWrapper(module,unsafe_skip_copy=True); positions=wrapper.resolve(PositionProvider); starts=_starts(text); module_items=[]; scopes=[]
+        if (grouped and item.kind == grouped[-1].kind == Kind.IMPORTS
+                and item.category == grouped[-1].category
+                and not text[grouped[-1].span.end:item.span.start].strip()):
+            previous = grouped.pop()
+            span = Span(previous.span.start, item.span.end, previous.span.first, item.span.last)
+            grouped.append(Member(item.scope, item.category, f"imports: lines {span.first}-{span.last}", Kind.IMPORTS, span, tooltip="contiguous import block"))
+        else:
+            grouped.append(item)
+    return grouped
+
+def _add_category_members(items: list[Member]) -> tuple[Member, ...]:
+    if not items:
+        return ()
+    result: list[Member] = []
+    run: list[Member] = []
+    def flush() -> None:
+        if not run:
+            return
+        first, last = run[0], run[-1]
+        if len(run) > 1:
+            span = Span(first.span.start, last.span.end, first.span.first, last.span.last)
+            result.append(Member(first.scope, first.category, "<entire category>", Kind.CATEGORY, span, True, f"Edit {len(run)} contiguous members together"))
+        result.extend(run)
+        run.clear()
+    for item in items:
+        if run and item.category != run[-1].category:
+            flush()
+        run.append(item)
+    flush()
+    return tuple(result)
+
+def _walk_class(text, node, qualified_name, positions, starts, scopes, parent=None):
+    items: list[Member] = []
+    position = positions[node]
+    if isinstance(node.body, cst.IndentedBlock):
+        for child in node.body.body:
+            if isinstance(child, cst.ClassDef):
+                nested = f"{qualified_name}.{child.name.value}"
+                _walk_class(text, child, nested, positions, starts, scopes, qualified_name)
+                continue
+            start = _node_start(child, positions[child], positions)
+            explicit, _ = _directive_before(text, start, position.start.line + 1)
+            category = explicit or _inferred_category(child, True)
+            items.append(_make_member(text, child, qualified_name, category, positions, starts, True, position.start.line + 1))
+    scopes.append(Scope(qualified_name, _add_category_members(_group_imports(items, text)), parent))
+
+def build_index(path: Path, text: str) -> tuple[Scope, ...]:
+    try:
+        module = cst.parse_module(text)
+    except cst.ParserSyntaxError as exc:
+        raise ParseError(str(exc), getattr(exc, "raw_line", None), getattr(exc, "raw_column", None)) from exc
+    wrapper = MetadataWrapper(module, unsafe_skip_copy=True)
+    positions = wrapper.resolve(PositionProvider)
+    starts = _line_starts(text)
+    module_items: list[Member] = []
+    class_scopes: list[Scope] = []
     for node in module.body:
-        pos=positions[node]; found,_=_directive(text,_node_start(node,pos,positions),1); category=found or _inferred(node,False)
-        if isinstance(node,cst.ClassDef):
-            inside=[]
-            if isinstance(node.body,cst.IndentedBlock):
-                for child in node.body.body:
-                    cp=positions[child]; found,_=_directive(text,_node_start(child,cp,positions),pos.start.line+1); cat=found or _inferred(child,True)
-                    inside.append(_member(text,child,node.name.value,cat,positions,starts,True))
-            scopes.append(Scope(node.name.value,tuple(_group(inside,text))))
-        else:module_items.append(_member(text,node,"<module>",category,positions,starts,False))
-    return (Scope("<module>",tuple(_group(module_items,text))),*scopes)
-def read_document(path:Path)->Document:
-    path=path.resolve(); raw=path.read_bytes(); encoding,_=tokenize.detect_encoding(io.BytesIO(raw).readline); text=raw.decode(encoding)
-    return Document(path,text,encoding,"\r\n" if "\r\n" in text else "\n",text.endswith(("\n","\r")),file_signature(path),build_index(path,text))
-def replacement(document:Document,member:Member,new:str)->str:
-    old=document.source(member); new=new.replace("\r\n","\n").replace("\r","\n").rstrip("\n")
-    if document.newline!="\n":new=new.replace("\n",document.newline)
-    if old.endswith(("\n","\r")):new+=document.newline
-    return document.text[:member.span.start]+new+document.text[member.span.end:]
-def validate(text,filename):
-    try:cst.parse_module(text); compile(text,filename,"exec",ast.PyCF_ONLY_AST)
-    except cst.ParserSyntaxError as e:raise ParseError(str(e),getattr(e,"raw_line",None),getattr(e,"raw_column",None)) from e
-    except SyntaxError as e:raise ParseError(e.msg,e.lineno,e.offset) from e
+        if isinstance(node, cst.ClassDef):
+            _walk_class(text, node, node.name.value, positions, starts, class_scopes)
+            continue
+        node_start = _node_start(node, positions[node], positions)
+        explicit, _ = _directive_before(text, node_start, 1)
+        category = explicit or _inferred_category(node, False)
+        module_items.append(_make_member(text, node, "<module>", category, positions, starts, False, 1))
+    module_scope = Scope("<module>", _add_category_members(_group_imports(module_items, text)))
+    return (module_scope, *class_scopes)
+
+def read_document(path: Path) -> Document:
+    path = path.resolve()
+    raw = path.read_bytes()
+    encoding, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
+    text = raw.decode(encoding)
+    return Document(path, text, encoding, "\r\n" if "\r\n" in text else "\n", text.endswith(("\n", "\r")), file_signature(path), build_index(path, text))
+
+def replacement(document: Document, member: Member, new: str) -> str:
+    old = document.source(member)
+    new = new.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+    if document.newline != "\n":
+        new = new.replace("\n", document.newline)
+    if old.endswith(("\n", "\r")):
+        new += document.newline
+    return document.text[:member.span.start] + new + document.text[member.span.end:]
+
+def validate(text: str, filename: str) -> None:
+    try:
+        cst.parse_module(text)
+        compile(text, filename, "exec", ast.PyCF_ONLY_AST)
+    except cst.ParserSyntaxError as exc:
+        raise ParseError(str(exc), getattr(exc, "raw_line", None), getattr(exc, "raw_column", None)) from exc
+    except SyntaxError as exc:
+        raise ParseError(exc.msg, exc.lineno, exc.offset) from exc

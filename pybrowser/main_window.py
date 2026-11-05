@@ -44,7 +44,10 @@ class MainWindow(QMainWindow):
     def _category(self,category):
         if self.member and not self.loading and self.editor.document().isModified() and not self._confirm_discard():return
         self.members.clear()
-        if self.scope:self.members.addItems([x.label for x in self.scope.members if x.category==category])
+        if self.scope:
+            for member in (x for x in self.scope.members if x.category == category):
+                self.members.addItem(member.label)
+                self.members.item(self.members.count() - 1).setToolTip(member.tooltip or member.label)
         if self.members.count():self.members.setCurrentRow(0)
     def _visible(self):
         cat=self.categories.currentItem().text() if self.categories.currentItem() else "";return [x for x in self.scope.members if x.category==cat] if self.scope else []
