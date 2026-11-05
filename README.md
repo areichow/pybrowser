@@ -246,3 +246,12 @@ A save now preserves a full Browser bookmark: Module path, Scope, Category, Memb
 Opening a Recent World now cancels and invalidates the previous indexing generation before any Module-tree or watcher objects are replaced. The refresh timer is stopped, old filesystem watches are removed, semantic and index caches are cleared, and opening is guarded against re-entry. Stale result batches are discarded by generation before touching Qt items. This closes the race where an old indexing task could deliver results while a Recent Worlds action rebuilt the tree, a plausible cause of the native Windows crash dialog.
 
 World indexing now uses up to four child Python processes through `ProcessPoolExecutor`. LibCST, AST, and symbol-table parsing therefore no longer hold the main Qt process's Python GIL while indexing large repositories such as Django. Results are returned to Qt in batches of 24 modules, Module-tree repainting is suspended for each batch, and module items are updated through a direct path-to-item map rather than an O(n) tree scan for every result. Progress updates occur once per batch rather than once per file. The first selected module is painted before child-process indexing starts.
+
+
+## Revision 11.5 Recent Worlds native-menu crash fix
+
+The Recent Worlds failure was traced to native menu lifetime, not folder parsing. Selecting a recent entry called `open_world_path()` directly from the QAction callback. `open_world_path()` called `_remember_world()`, which synchronously cleared and rebuilt the same Recent Worlds QMenu. On Windows this could delete the QAction while Qt was still dispatching that QAction, producing the native “Python has stopped working” termination rather than a Python traceback.
+
+Recent-world activation is now two-stage. The QAction stores the path and schedules `_finish_open_recent_world()` with `QTimer.singleShot(0, ...)`, allowing the native menu callback to return before the world changes. Updating the MRU list is also queued, and `_rebuild_recent_menu()` refuses to clear the menu while it is visible. QAction paths are stored with `setData()` rather than captured only by a callback default.
+
+The Windows process-indexing entry point is also protected with the standard `if __name__ == "__main__"` guard and `multiprocessing.freeze_support()`. This prevents `ProcessPoolExecutor` child startup from recursively launching another PyBrowser when invoked with `python -m pybrowser` or from a frozen Windows executable.

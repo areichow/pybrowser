@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import signal
 import sys
+from multiprocessing import freeze_support
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
@@ -28,6 +29,8 @@ def install_console_interrupt(app: QApplication) -> QTimer:
 
 
 def main(argv=None):
+    # Required for ProcessPoolExecutor child startup on Windows and frozen apps.
+    freeze_support()
     parser = argparse.ArgumentParser()
     parser.add_argument("file", nargs="?", type=Path)
     args = parser.parse_args(argv)

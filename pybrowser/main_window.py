@@ -56,6 +56,7 @@ class MainWindow(QMainWindow):
         self.module_entries: dict[str, ModuleEntry] = {}
         self.module_tree_items = {}
         self.opening_world = False
+        self.pending_recent_world = None
         self.settings = QSettings("PyBrowser", "PyBrowser")
         self.thread_pool = QThreadPool.globalInstance()
         self.index_cache = ModuleIndexCache()
@@ -1015,17 +1016,36 @@ class MainWindow(QMainWindow):
         value = str(Path(path).resolve())
         recent = [item for item in self._recent_worlds() if item != value]
         self.settings.setValue("recentWorlds", [value, *recent][:10])
-        self._rebuild_recent_menu()
+        # Never clear/rebuild a QMenu from inside one of its own QAction
+        # callbacks. On Windows that can destroy the currently executing native
+        # menu action and terminate the process inside Qt.
+        QTimer.singleShot(0, self._rebuild_recent_menu)
+
+    def _open_recent_world(self, path_value):
+        # QAction.triggered runs while the native menu event is still unwinding.
+        # Queue the actual world switch until after Qt has closed the menu.
+        self.pending_recent_world = str(path_value)
+        QTimer.singleShot(0, self._finish_open_recent_world)
+
+    def _finish_open_recent_world(self):
+        value = self.pending_recent_world
+        self.pending_recent_world = None
+        if value:
+            self.open_world_path(Path(value))
 
     def _rebuild_recent_menu(self):
-        if not hasattr(self, "recent_menu"):
+        if not hasattr(self, "recent_menu") or self.recent_menu.isVisible():
+            if hasattr(self, "recent_menu") and self.recent_menu.isVisible():
+                QTimer.singleShot(50, self._rebuild_recent_menu)
             return
         self.recent_menu.clear()
         recent = self._recent_worlds()
         self.recent_menu.setEnabled(bool(recent))
         for value in recent:
             action = self.recent_menu.addAction(value)
-            action.triggered.connect(lambda checked=False, p=value: self.open_world_path(Path(p)))
+            action.setData(value)
+            action.triggered.connect(lambda checked=False, item=action: self._open_recent_world(item.data()))
+
 
     def _scope(self, row):
         if row < 0 or not self.doc:
