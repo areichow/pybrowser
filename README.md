@@ -125,6 +125,7 @@ The **Window** menu uses the `Alt+W` accelerator and lists windows in opening or
 | `Ctrl+Alt+G` | Go to source line |
 | `Alt+Left` | Navigate backward |
 | `Alt+Right` | Navigate forward |
+| `Shift+F12` | Find references to the selected name |
 
 ### Source editor
 
@@ -181,6 +182,31 @@ Sender analysis is lexical. Calls such as `run()`, `self.run()`, `worker.run()`,
 - Dark or light theme
 
 Preferences and main-window geometry are stored using `QSettings`.
+
+## Native semantic intelligence
+
+PyBrowser builds a native semantic model during background indexing using Python's `ast` and `symtable` modules. The model records:
+
+- Module, class, function, method, parameter, import, and assignment symbols
+- Reads, writes, calls, imports, class bases, decorators, annotations, and deletes
+- Source path, lexical scope, line, and column for each symbol and reference
+
+Right-click a Member or identifier and choose **References to...**. Member context menus can filter references to reads, assignments, or imports. `Shift+F12` finds all reference kinds for the identifier under the cursor.
+
+Native PyBrowser diagnostics report:
+
+- Duplicate class, function, and method definitions in one scope
+- Possibly undefined local names
+- Unused or orphaned `# category:` metadata
+- Duplicate category directives before a Member
+
+Native rules appear in the Diagnostics panel with a `PYBROWSER:` prefix and do not require BasedPyright, Pyright, Node.js, or an LSP server.
+
+## Structural undo plan
+
+The package includes `UNDO_PLAN.md`, which specifies a Smalltalk-style Member version journal, safe workspace undo/redo, crash recovery, retention, and optional Git context. The plan deliberately keeps Git operations explicit and treats PyBrowser history as immediate pre-commit recovery rather than a replacement for Git.
+
+A full LSP client is deferred. The current design combines native AST/symbol-table intelligence with optional batch BasedPyright or Pyright diagnostics.
 
 ## Type checking
 

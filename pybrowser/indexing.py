@@ -9,6 +9,7 @@ from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 from .model import Scope
 from .parser import ParseError, read_document
 from .project import ModuleEntry
+from .semantic import SemanticModule, analyze_source
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +17,7 @@ class ModuleIndexResult:
     path: Path
     generation: int
     scopes: tuple[Scope, ...] | None
+    semantic: SemanticModule | None = None
     error: str | None = None
 
 
@@ -51,9 +53,10 @@ class IndexWorldTask(QRunnable):
                 break
             try:
                 document = read_document(entry.path)
-                result = ModuleIndexResult(entry.path, self.generation, document.scopes)
-            except (OSError, UnicodeError, ParseError) as exc:
-                result = ModuleIndexResult(entry.path, self.generation, None, str(exc))
+                semantic = analyze_source(entry.path, document.text)
+                result = ModuleIndexResult(entry.path, self.generation, document.scopes, semantic)
+            except (OSError, UnicodeError, ParseError, SyntaxError) as exc:
+                result = ModuleIndexResult(entry.path, self.generation, None, None, str(exc))
             self.signals.result.emit(result)
             completed += 1
             self.signals.progress.emit(self.generation, completed, total)

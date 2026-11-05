@@ -36,6 +36,8 @@ from .typecheck_worker import TypeCheckSignals, TypeCheckTask
 from .theme import apply_theme
 from .conventions import category_sort_key, display_scope, is_special_category
 from .windowing import install_window_commands
+from .semantic import analyze_source
+from .semantic_queries import references_in_world
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
 from PySide6.QtWidgets import QTextEdit
@@ -54,6 +56,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("PyBrowser", "PyBrowser")
         self.thread_pool = QThreadPool.globalInstance()
         self.index_cache = ModuleIndexCache()
+        self.semantic_modules = {}
         self.index_generation = 0
         self.index_cancelled = Event()
         self.index_signals = IndexSignals()
@@ -205,6 +208,11 @@ class MainWindow(QMainWindow):
         typecheck_action = QAction("Run Type Check", self)
         typecheck_action.setShortcut("Ctrl+Shift+T")
         typecheck_action.triggered.connect(self.run_type_check)
+        native_diagnostics_action = QAction("Show Native Semantic Diagnostics", self)
+        native_diagnostics_action.triggered.connect(self.show_native_diagnostics)
+        references_action = QAction("References to Selected Name...", self)
+        references_action.setShortcut("Shift+F12")
+        references_action.triggered.connect(self.show_references_for_selection)
         toggle_diagnostics_action = QAction("Show Diagnostics", self)
         toggle_diagnostics_action.setCheckable(True)
         toggle_diagnostics_action.toggled.connect(self.diagnostics.setVisible)
@@ -250,6 +258,8 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(new_browser_action)
         tools_menu.addSeparator()
         tools_menu.addAction(typecheck_action)
+        tools_menu.addAction(native_diagnostics_action)
+        tools_menu.addAction(references_action)
         tools_menu.addAction(toggle_diagnostics_action)
         tools_menu.addSeparator()
         tools_menu.addAction(typecheck_settings_action)
@@ -274,7 +284,7 @@ class MainWindow(QMainWindow):
         init_action.triggered.connect(self.create_init_file)
         navigate_menu = self.menuBar().addMenu("&Navigate")
         navigate_menu.addActions([quick_module_action, quick_symbol_action, back_action, forward_action, goto_action])
-        self.addActions([open_action, save_action, find_action, next_action, replace_action, abandon_action, new_browser_action, typecheck_action, quick_module_action, quick_symbol_action, project_find_action, back_action, forward_action, goto_action])
+        self.addActions([open_action, save_action, find_action, next_action, replace_action, abandon_action, new_browser_action, typecheck_action, references_action, quick_module_action, quick_symbol_action, project_find_action, back_action, forward_action, goto_action])
         install_window_commands(self, self.workspace, file_menu)
 
     def _typecheck_preferences(self):
@@ -707,6 +717,7 @@ class MainWindow(QMainWindow):
         try:
             self.doc = read_document(Path(path))
             self.index_cache.put(self.doc.path, self.doc.scopes)
+            self.semantic_modules[self.doc.path.resolve()] = analyze_source(self.doc.path, self.doc.text)
         except Exception as exc:
             QMessageBox.critical(self, "Cannot open module", str(exc))
             return
@@ -836,6 +847,10 @@ class MainWindow(QMainWindow):
         if result.generation != self.index_generation:
             return
         self.index_cache.put(result.path, result.scopes, result.error)
+        if result.semantic is not None:
+            self.semantic_modules[result.path.resolve()] = result.semantic
+        else:
+            self.semantic_modules.pop(result.path.resolve(), None)
         self._update_module_tree_item(result.path)
 
     def _index_progress(self, generation, completed, total):
@@ -848,8 +863,10 @@ class MainWindow(QMainWindow):
             return
         errors = sum(1 for entry in self.world.modules if (cached := self.index_cache.get(entry.path)) and cached.error)
         suffix = f", {errors} parse error(s)" if errors else ""
-        self.busy_indicator.end(f"Source model ready: {len(self.world.modules)} modules{suffix}")
-        self.statusBar().showMessage(f"Indexed {len(self.world.modules)} modules{suffix}", 6000)
+        native = tuple(diagnostic for module in self.semantic_modules.values() for diagnostic in module.diagnostics)
+        self.diagnostics.set_native_diagnostics(native)
+        self.busy_indicator.end(f"Source model ready: {len(self.world.modules)} modules{suffix}, {len(native)} native diagnostic(s)")
+        self.statusBar().showMessage(f"Indexed {len(self.world.modules)} modules{suffix}; {len(native)} native diagnostic(s)", 6000)
 
     def _update_module_tree_item(self, path):
         target = str(Path(path).resolve())
@@ -1143,6 +1160,13 @@ class MainWindow(QMainWindow):
             menu.addAction("Move to category...", self.move_current_member)
             menu.addAction("Duplicate", self.duplicate_current_member)
             menu.addAction("Delete...", self.delete_current_member)
+            menu.addSeparator()
+            reference_name = callable_name_from_label(member.label) if member.kind.value in {"function", "method"} else member.label.split()[0]
+            references_menu = menu.addMenu(f"References to {reference_name}")
+            references_menu.addAction("All references...", lambda: self.show_references(reference_name))
+            references_menu.addAction("Reads...", lambda: self.show_references(reference_name, {"read", "call", "base", "decorator", "annotation"}))
+            references_menu.addAction("Assignments...", lambda: self.show_references(reference_name, {"write", "delete"}))
+            references_menu.addAction("Imports...", lambda: self.show_references(reference_name, {"import"}))
             if member.kind.value in {"function", "method"}:
                 menu.addSeparator()
                 name = callable_name_from_label(member.label)
@@ -1176,14 +1200,38 @@ class MainWindow(QMainWindow):
     def _editor_context_menu(self, position):
         menu = self.editor.createStandardContextMenu()
         name = self._callable_name_at_cursor()
+        references_action = None
         if name:
             menu.addSeparator()
             action = menu.addAction(f"Implementers of {name}...")
+            references_action = menu.addAction(f"References to {name}...")
         else:
             action = None
         chosen = menu.exec(self.editor.viewport().mapToGlobal(position))
         if action and chosen == action:
             self.show_implementers(name)
+        elif references_action and chosen == references_action:
+            self.show_references(name)
+
+    def show_native_diagnostics(self):
+        diagnostics = tuple(diagnostic for module in self.semantic_modules.values() for diagnostic in module.diagnostics)
+        self.diagnostics.set_native_diagnostics(diagnostics)
+        self.diagnostics.setVisible(True)
+
+    def show_references_for_selection(self):
+        name = self._callable_name_at_cursor()
+        if name:
+            self.show_references(name)
+
+    def show_references(self, name, kinds=None):
+        if not self.world or not name:
+            return
+        results = references_in_world(self.world, self.semantic_modules, name, kinds)
+        title = f"References to {name}"
+        if results:
+            self._show_code_query_dialog(title, results)
+        else:
+            QMessageBox.information(self, title, f"No indexed references to {name} were found in this world.")
 
     def show_implementers(self, name):
         if self.world and name:
