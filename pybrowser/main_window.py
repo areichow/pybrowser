@@ -827,6 +827,31 @@ class MainWindow(QMainWindow):
         self.modules.expandAll()
         self.loading = False
 
+    def _capture_browser_selection(self):
+        """Capture a stable Browser bookmark before any model/tree rebuild."""
+        if not self.doc:
+            return None
+        return {
+            "path": self.doc.path,
+            "scope": self.member.scope if self.member else (self.scope.name if self.scope else None),
+            "category": self.member.category if self.member else self._raw_category(),
+            "label": self.member.label if self.member else "",
+            "row": self.members.currentRow(),
+            "cursor": self.editor.textCursor().position(),
+        }
+
+    def _restore_browser_bookmark(self, bookmark):
+        if not bookmark or not Path(bookmark["path"]).exists():
+            return
+        restore = None
+        if bookmark["scope"]:
+            restore = (bookmark["scope"], bookmark["category"], bookmark["label"])
+        self._select_module_path(bookmark["path"], restore, bookmark["row"])
+        if self.member:
+            cursor = self.editor.textCursor()
+            cursor.setPosition(min(bookmark["cursor"], len(self.editor.toPlainText())))
+            self.editor.setTextCursor(cursor)
+
     def _module(self, current, previous=None):
         if self.loading or current is None:
             return
@@ -837,17 +862,21 @@ class MainWindow(QMainWindow):
             return
         self._open_module(Path(key))
 
-    def _select_module_path(self, path, restore=None):
+    def _select_module_path(self, path, restore=None, fallback_row=None):
         target = str(Path(path).resolve())
         iterator = [self.modules.topLevelItem(i) for i in range(self.modules.topLevelItemCount())]
         while iterator:
             item = iterator.pop(0)
             if item.data(0, Qt.ItemDataRole.UserRole) == target:
-                self.modules.setCurrentItem(item)
-                if restore:
-                    self._open_module(Path(target), restore)
+                # Selecting the module tree item is presentation only here. Opening
+                # it through the currentItemChanged signal would lose the restore
+                # bookmark and select the first module-level Member.
+                with QSignalBlocker(self.modules):
+                    self.modules.setCurrentItem(item)
+                self._open_module(Path(target), restore, fallback_row=fallback_row)
                 return
             iterator[0:0] = [item.child(i) for i in range(item.childCount())]
+
 
     def _watch_world(self):
         existing = self.watcher.directories() + self.watcher.files()
@@ -870,17 +899,17 @@ class MainWindow(QMainWindow):
     def _refresh_world(self):
         if not self.world or self.world.single_file:
             return
-        current = self.doc.path if self.doc else None
+        bookmark = self._capture_browser_selection()
         try:
             self.world = open_world(self.world.root)
             self.index_cache.retain({entry.path for entry in self.world.modules})
             self._populate_module_tree()
             self._watch_world()
             self._start_background_index()
-            if current and current.exists():
-                self._select_module_path(current)
+            self._restore_browser_bookmark(bookmark)
         except OSError as exc:
             self.statusBar().showMessage(str(exc), 5000)
+
 
     def _file_changed(self, path):
         if self.doc and Path(path) == self.doc.path and not self.editor.document().isModified():
@@ -1218,6 +1247,8 @@ class MainWindow(QMainWindow):
         self.child_windows.append(window)
 
     def _workspace_file_changed(self, path, origin):
+        if origin is self:
+            return
         path = Path(path).resolve()
         self.index_cache.invalidate(path)
         if self.doc and path == self.doc.path:
@@ -1547,6 +1578,7 @@ class MainWindow(QMainWindow):
             return
         if changed(self.doc) and QMessageBox.question(self, "File changed", "The file changed outside PyBrowser. Overwrite it?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
+        bookmark = self._capture_browser_selection()
         path = self.doc.path
         scope = self.member.scope
         category = self.member.category
@@ -1561,6 +1593,10 @@ class MainWindow(QMainWindow):
             self.workspace.announce_file_changed(path, self)
             self.index_cache.invalidate(path)
             self._open_module(path, (scope, category, ""), fallback_row=row)
+            if bookmark and self.member:
+                cursor = self.editor.textCursor()
+                cursor.setPosition(min(bookmark["cursor"], len(self.editor.toPlainText())))
+                self.editor.setTextCursor(cursor)
             self._update_modified_indicator(False)
             self.statusBar().showMessage("Saved", 5000)
         except ParseError as exc:

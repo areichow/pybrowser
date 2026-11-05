@@ -34,3 +34,23 @@ def test_unsaved_yellow_precedes_duplicate_warning_color():
     source = Path("pybrowser/widgets/member_delegate.py").read_text()
     assert 'unsaved = ' in source
     assert source.index("elif unsaved:") < source.index("elif duplicate:")
+
+
+def test_world_refresh_preserves_complete_browser_bookmark():
+    source = Path("pybrowser/main_window.py").read_text()
+    refresh = source[source.index("    def _refresh_world"):source.index("    def _file_changed", source.index("    def _refresh_world"))]
+    assert "_capture_browser_selection()" in refresh
+    assert "_restore_browser_bookmark(bookmark)" in refresh
+
+
+def test_programmatic_module_selection_blocks_reset_signal():
+    source = Path("pybrowser/main_window.py").read_text()
+    method = source[source.index("    def _select_module_path"):source.index("    def _watch_world", source.index("    def _select_module_path"))]
+    assert "QSignalBlocker(self.modules)" in method
+    assert "fallback_row=fallback_row" in method
+
+
+def test_workspace_writer_does_not_reload_its_own_save_broadcast():
+    source = Path("pybrowser/main_window.py").read_text()
+    method = source[source.index("    def _workspace_file_changed"):source.index("    def _members_context_menu", source.index("    def _workspace_file_changed"))]
+    assert "if origin is self:" in method
