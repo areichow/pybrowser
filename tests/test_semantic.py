@@ -75,3 +75,31 @@ def test_lambda_body_still_reports_truly_missing_name():
     undefined = {item.message for item in result.diagnostics if item.rule == "possibly-undefined-local"}
     assert any("'missing'" in message for message in undefined)
     assert not any("'item'" in message for message in undefined)
+
+
+def test_module_class_defined_later_is_known_global():
+    source = """class Repository:
+    def lock(self):
+        return RepoLock(self)
+
+class RepoLock:
+    pass
+"""
+    result = analyze_source(Path("repo.py"), source)
+    assert not any(item.rule == "possibly-undefined-local" and "RepoLock" in item.message for item in result.diagnostics)
+
+
+def test_module_functions_defined_later_are_known_globals():
+    source = """def run():
+    diagnostic('ready')
+
+def diagnostic(message):
+    return colorize(message)
+
+def colorize(value):
+    return value
+"""
+    result = analyze_source(Path("app.py"), source)
+    messages = [item.message for item in result.diagnostics if item.rule == "possibly-undefined-local"]
+    assert not any("diagnostic" in message for message in messages)
+    assert not any("colorize" in message for message in messages)

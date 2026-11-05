@@ -262,3 +262,10 @@ The Windows process-indexing entry point is also protected with the standard `if
 Native undefined-local analysis now recognizes Python bindings that are not represented as ordinary `ast.Name(Store)` nodes. Lambda expressions receive their own lexical scope, and positional-only, positional, keyword-only, variadic, and keyword parameters are registered before the lambda body is analyzed. Lambda defaults remain analyzed in the enclosing scope, matching Python evaluation rules.
 
 Exception aliases from `except Exception as error:` are registered as local exception symbols and write references before the handler body is analyzed. Uses such as `print(error)` are therefore no longer reported as possibly undefined. Truly unresolved names inside lambda bodies and exception handlers continue to produce `PYBROWSER:possibly-undefined-local` information messages.
+
+
+## Revision 11.7 module globals and File View search
+
+Native semantic analysis now predeclares the complete module namespace before analyzing function and method bodies. Classes, functions, imports, and assignment targets defined later in the same file are valid globals and no longer produce `possibly-undefined-local` hints. This covers constructor calls such as `RepoLock(...)` before `class RepoLock`, calls to a later `diagnostic()` function, and calls from `diagnostic()` to a later `colorize()` function.
+
+File View now provides `Ctrl+F` Find, `Ctrl+G` Find Next, `Ctrl+H` Replace, and `Ctrl+Shift+G` Go to Line. Find supports match case, whole-word matching, backward search, and wrap-around behavior. **Find All in Current File** opens a results panel below the editor with line, column, and source preview; selecting a result moves the File View editor to that match. Replace supports Replace and Replace All using the same literal, case, and whole-word rules.

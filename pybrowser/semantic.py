@@ -65,7 +65,7 @@ def read_source(path: Path) -> str:
 
 
 class SemanticVisitor(ast.NodeVisitor):
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, module_bindings=()):
         self.path = path
         self.scope = ["<module>"]
         self.symbols = []
@@ -74,6 +74,9 @@ class SemanticVisitor(ast.NodeVisitor):
         self.definitions = [defaultdict(list)]
         self.local_defs = [set()]
         self.local_loads = [[]]
+        # Python resolves globals from the complete module namespace, regardless
+        # of whether a class/function appears before or after the current use.
+        self.module_bindings = set(module_bindings)
 
     @property
     def scope_name(self):
@@ -103,6 +106,7 @@ class SemanticVisitor(ast.NodeVisitor):
                 self.diagnostics.append(NativeDiagnostic(self.path, "warning", f"{name!r} is defined more than once in scope {self.scope_name} ({kinds})", line, column, line, column + len(name), "duplicate-definition"))
         if self.scope_name != "<module>":
             known = set().union(*self.local_defs)
+            known.update(self.module_bindings)
             known.update(dir(builtins))
             known.update({"self", "cls", "__class__"})
             for name, item in self.local_loads[-1]:
@@ -212,6 +216,49 @@ class SemanticVisitor(ast.NodeVisitor):
             elif isinstance(child, ast.Attribute): self.reference(child.attr, kind, child)
 
 
+def _bound_names(target):
+    """Yield names bound by an assignment target or pattern-like target."""
+    if isinstance(target, ast.Name):
+        yield target.id
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for item in target.elts:
+            yield from _bound_names(item)
+    elif isinstance(target, ast.Starred):
+        yield from _bound_names(target.value)
+
+
+def _module_bindings(tree: ast.Module):
+    """Collect the namespace Python creates for the complete module.
+
+    Function bodies may reference classes, functions, and assignments declared
+    later in the file. AST visitation order must not turn those valid globals
+    into undefined-local hints.
+    """
+    names = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Import):
+            names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            names.update(alias.asname or alias.name for alias in node.names if alias.name != "*")
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                names.update(_bound_names(target))
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            names.update(_bound_names(node.target))
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars:
+                    names.update(_bound_names(item.optional_vars))
+        elif isinstance(node, ast.Try):
+            for handler in node.handlers:
+                if handler.name:
+                    names.add(handler.name)
+    return names
+
+
 def _category_diagnostics(path: Path, text: str):
     lines = text.splitlines()
     values = []
@@ -246,7 +293,7 @@ def analyze_source(path: Path, text: str) -> SemanticModule:
     tree = ast.parse(text, filename=str(path), type_comments=True)
     # Constructing a stdlib symbol table validates Python's own lexical-scope model.
     symtable.symtable(text, str(path), "exec")
-    visitor = SemanticVisitor(path)
+    visitor = SemanticVisitor(path, _module_bindings(tree))
     visitor.visit(tree)
     visitor._finish_scope(tree)
     diagnostics = list(visitor.diagnostics) + _category_diagnostics(path, text)
