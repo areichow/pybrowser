@@ -83,6 +83,7 @@ class MainWindow(QMainWindow):
         self.scope = None
         self.member = None
         self.loading = False
+        self.internal_reload = False
         self.history = NavigationHistory()
         self.navigating_history = False
         self.search_matches: tuple[SearchMatch, ...] = ()
@@ -713,24 +714,38 @@ class MainWindow(QMainWindow):
         elif world.modules:
             self._select_module_path(world.modules[0].path)
 
-    def _open_module(self, path, restore=None):
+    def _open_module(self, path, restore=None, fallback_row=None):
         try:
-            self.doc = read_document(Path(path))
-            self.index_cache.put(self.doc.path, self.doc.scopes)
-            self.semantic_modules[self.doc.path.resolve()] = analyze_source(self.doc.path, self.doc.text)
+            document = read_document(Path(path))
+            semantic = analyze_source(document.path, document.text)
         except Exception as exc:
             QMessageBox.critical(self, "Cannot open module", str(exc))
             return
+        self.internal_reload = True
         self.loading = True
-        self.scopes.clear()
-        self.scopes.addItems([display_scope(item.name) for item in self.doc.scopes])
-        self.loading = False
-        if self.scopes.count():
-            self.scopes.setCurrentRow(0)
-        self._search_text_changed()
-        self._watch_current_file()
-        if restore:
-            self._restore(*restore)
+        try:
+            self.doc = document
+            self.index_cache.put(self.doc.path, self.doc.scopes)
+            self.semantic_modules[self.doc.path.resolve()] = semantic
+            self.editor.document().setModified(False)
+            self.setWindowModified(False)
+            with QSignalBlocker(self.scopes), QSignalBlocker(self.categories), QSignalBlocker(self.members):
+                self.scopes.clear()
+                self.scopes.addItems([display_scope(item.name) for item in self.doc.scopes])
+                self.scope = None
+                self.member = None
+                self.categories.clear()
+                self.members.clear()
+            if restore:
+                self._restore(*restore, fallback_row=fallback_row)
+            elif self.doc.scopes:
+                self._select_location(self.doc.scopes[0].name, None, None, 0)
+            self._search_text_changed()
+            self._watch_current_file()
+        finally:
+            self.loading = False
+            self.internal_reload = False
+
 
     def _populate_module_tree(self):
         self.loading = True
@@ -913,21 +928,34 @@ class MainWindow(QMainWindow):
         if self.member and not self.loading and not self._confirm_discard():
             return
         self.scope = self.doc.scopes[row]
-        self.categories.clear()
-        self.categories.addItems(sorted(dict.fromkeys(item.category for item in self.scope.members), key=category_sort_key))
+        with QSignalBlocker(self.categories):
+            self.categories.clear()
+            self.categories.addItems(sorted(dict.fromkeys(item.category for item in self.scope.members), key=category_sort_key))
         if self.categories.count():
             self.categories.setCurrentRow(0)
 
     def _category(self, category):
         if self.member and not self.loading and self.editor.document().isModified() and not self._confirm_discard():
             return
-        self.members.clear()
-        if self.scope:
-            for member in (item for item in self.scope.members if item.category == category):
-                self.members.addItem(member.label)
-                self.members.item(self.members.count() - 1).setToolTip(member.tooltip or member.label)
+        self._populate_members(category)
         if self.members.count():
             self.members.setCurrentRow(0)
+
+    def _populate_members(self, category):
+        visible = [item for item in self.scope.members if item.category == category] if self.scope else []
+        callable_names = [callable_name_from_label(item.label) for item in visible if not item.synthetic and item.kind.value in {"function", "method"}]
+        duplicate_names = {name for name in callable_names if callable_names.count(name) > 1}
+        with QSignalBlocker(self.members):
+            self.members.clear()
+            for member in visible:
+                self.members.addItem(member.label)
+                item = self.members.item(self.members.count() - 1)
+                item.setToolTip(member.tooltip or member.label)
+                if not member.synthetic and member.kind.value in {"function", "method"} and callable_name_from_label(member.label) in duplicate_names:
+                    item.setData(Qt.ItemDataRole.UserRole + 1, "duplicate-definition")
+                    item.setForeground(QColor("#dca8ac"))
+                    item.setToolTip("Duplicate definition in this scope\n" + (member.tooltip or member.label))
+
 
     def _visible(self):
         category = self.categories.currentItem().text() if self.categories.currentItem() else ""
@@ -942,6 +970,7 @@ class MainWindow(QMainWindow):
         self._load_member(new)
 
     def _load_member(self, member):
+        previous_loading = self.loading
         self.loading = True
         if member:
             self.editor.setPlainText(self.doc.source(member))
@@ -949,7 +978,7 @@ class MainWindow(QMainWindow):
             self.crumb.setText(f"{self.doc.path.name} > {display_scope(member.scope)} > {member.category} > {member.label}")
         else:
             self.editor.clear()
-        self.loading = False
+        self.loading = previous_loading
         self.setWindowModified(False)
         self._update_modified_indicator(False)
         if self.find_text.text() and self.current_member_only.isChecked():
@@ -1298,7 +1327,7 @@ class MainWindow(QMainWindow):
         self._select_module_path(result.module, (result.scope, result.category, result.label))
         self._select_line_result(result.line)
 
-    def _apply_structural_edit(self, edit, description):
+    def _apply_structural_edit(self, edit, description, fallback_row=None, occurrence=0):
         if not self.doc:
             return
         if self.editor.document().isModified() and not self._confirm_discard():
@@ -1307,28 +1336,50 @@ class MainWindow(QMainWindow):
             validate(edit.text, str(self.doc.path))
             if changed(self.doc):
                 raise StructuralEditError("The module changed on disk; reload it before structural editing")
+            path = self.doc.path
             atomic_write(self.doc, edit.text)
-            self.workspace.announce_file_changed(self.doc.path, self)
-            self.index_cache.put(self.doc.path, None)
-            self._open_module(self.doc.path)
-            self._select_structural_result(edit.scope, edit.category, edit.preferred_name)
+            self.editor.document().setModified(False)
+            self.setWindowModified(False)
+            self.workspace.announce_file_changed(path, self)
+            self.index_cache.invalidate(path)
+            self._open_module(path, (edit.scope, edit.category, edit.preferred_name), fallback_row=fallback_row)
+            if edit.preferred_name and occurrence:
+                matches = [index for index, member in enumerate(self._visible()) if member.label.startswith(edit.preferred_name)]
+                if occurrence < len(matches):
+                    self.members.setCurrentRow(matches[occurrence])
             self.statusBar().showMessage(description, 5000)
         except (OSError, ParseError, StructuralEditError) as exc:
             QMessageBox.critical(self, "Structural edit failed", str(exc))
 
-    def _select_structural_result(self, scope, category, preferred_name):
-        for index, item in enumerate(self.doc.scopes):
-            if item.name == scope:
-                self.scopes.setCurrentRow(index)
-                break
-        categories = self.categories.findItems(category, Qt.MatchFlag.MatchExactly)
-        if categories:
-            self.categories.setCurrentItem(categories[0])
-        if preferred_name:
-            for index, member in enumerate(self._visible()):
-                if member.label.startswith(preferred_name):
-                    self.members.setCurrentRow(index)
-                    break
+    def _select_location(self, scope, category=None, label=None, fallback_row=None):
+        scope_index = next((index for index, item in enumerate(self.doc.scopes) if item.name == scope), 0)
+        self.scope = self.doc.scopes[scope_index]
+        with QSignalBlocker(self.scopes):
+            self.scopes.setCurrentRow(scope_index)
+        categories = sorted(dict.fromkeys(item.category for item in self.scope.members), key=category_sort_key)
+        with QSignalBlocker(self.categories):
+            self.categories.clear()
+            self.categories.addItems(categories)
+            category_index = categories.index(category) if category in categories else (0 if categories else -1)
+            self.categories.setCurrentRow(category_index)
+        selected_category = categories[category_index] if category_index >= 0 else ""
+        self._populate_members(selected_category)
+        visible = self._visible()
+        row = next((index for index, member in enumerate(visible) if label and member.label == label), -1)
+        if row < 0 and label:
+            row = next((index for index, member in enumerate(visible) if member.label.startswith(label)), -1)
+        if row < 0 and fallback_row is not None and visible:
+            row = min(max(0, fallback_row), len(visible) - 1)
+        if row < 0 and visible:
+            row = 0
+        with QSignalBlocker(self.members):
+            self.members.setCurrentRow(row)
+        self.member = visible[row] if 0 <= row < len(visible) else None
+        self._load_member(self.member)
+
+    def _select_structural_result(self, scope, category, preferred_name, fallback_row=None):
+        self._select_location(scope, category, preferred_name, fallback_row)
+
 
     def new_function(self):
         if not self.doc:
@@ -1387,8 +1438,13 @@ class MainWindow(QMainWindow):
 
     def duplicate_current_member(self):
         if self.doc and self.member:
-            try: self._apply_structural_edit(duplicate_member(self.doc, self.member), "Duplicated Member")
-            except StructuralEditError as exc: QMessageBox.warning(self, "Cannot duplicate Member", str(exc))
+            row = self.members.currentRow()
+            name = callable_name_from_label(self.member.label) if self.member.kind.value in {"function", "method"} else self.member.label
+            prior = [member for member in self._visible()[:row + 1] if (callable_name_from_label(member.label) if member.kind.value in {"function", "method"} else member.label) == name]
+            try:
+                self._apply_structural_edit(duplicate_member(self.doc, self.member), "Duplicated Member", fallback_row=row + 1, occurrence=len(prior))
+            except StructuralEditError as exc:
+                QMessageBox.warning(self, "Cannot duplicate Member", str(exc))
 
     def delete_current_member(self):
         if not self.doc or not self.member:
@@ -1427,15 +1483,20 @@ class MainWindow(QMainWindow):
             return
         if changed(self.doc) and QMessageBox.question(self, "File changed", "The file changed outside PyBrowser. Overwrite it?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
-        location = (str(self.doc.path), self.member.scope, self.member.category, self.member.label)
+        path = self.doc.path
+        scope = self.member.scope
+        category = self.member.category
+        row = self.members.currentRow()
         candidate = replacement(self.doc, self.member, self.editor.toPlainText())
         try:
-            validate(candidate, str(self.doc.path))
+            validate(candidate, str(path))
             atomic_write(self.doc, candidate)
-            self.workspace.announce_file_changed(self.doc.path, self)
-            self._open_module(self.doc.path, location[1:])
+            # Saving is complete before any Browser selection signals are allowed.
             self.editor.document().setModified(False)
             self.setWindowModified(False)
+            self.workspace.announce_file_changed(path, self)
+            self.index_cache.invalidate(path)
+            self._open_module(path, (scope, category, ""), fallback_row=row)
             self._update_modified_indicator(False)
             self.statusBar().showMessage("Saved", 5000)
         except ParseError as exc:
@@ -1444,6 +1505,7 @@ class MainWindow(QMainWindow):
                 self._highlight_error(exc.line, exc.column or 1)
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
+
 
     def _highlight_error(self, line, column):
         cursor = self.editor.textCursor()
@@ -1454,19 +1516,9 @@ class MainWindow(QMainWindow):
         self.editor.setTextCursor(cursor)
         self.editor.setFocus()
 
-    def _restore(self, scope, category, label):
-        for index, item in enumerate(self.doc.scopes):
-            if item.name == scope:
-                self.scopes.setCurrentRow(index)
-                break
-        found = self.categories.findItems(category, Qt.MatchFlag.MatchExactly)
-        if found:
-            self.categories.setCurrentItem(found[0])
-        found = self.members.findItems(label, Qt.MatchFlag.MatchExactly)
-        if found:
-            self.members.setCurrentItem(found[0])
-        elif self.members.count():
-            self.members.setCurrentRow(0)
+    def _restore(self, scope, category, label, fallback_row=None):
+        self._select_location(scope, category, label, fallback_row)
+
 
     def closeEvent(self, event):
         if self._confirm_discard():

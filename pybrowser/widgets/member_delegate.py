@@ -14,7 +14,14 @@ class MemberDelegate(QStyledItemDelegate):
             style.drawPrimitive(QStyle.PrimitiveElement.PE_PanelItemViewItem, option, painter, option.widget)
         text = index.data(Qt.ItemDataRole.DisplayRole) or ""
         rect = option.rect.adjusted(5, 0, -4, 0)
-        base_color = option.palette.highlightedText().color() if option.state & QStyle.StateFlag.State_Selected else option.palette.text().color()
+        duplicate = index.data(Qt.ItemDataRole.UserRole + 1) == "duplicate-definition"
+        if option.state & QStyle.StateFlag.State_Selected:
+            base_color = option.palette.highlightedText().color()
+        elif duplicate:
+            base_color = QColor("#dca8ac")
+        else:
+            foreground = index.data(Qt.ItemDataRole.ForegroundRole)
+            base_color = foreground.color() if foreground else option.palette.text().color()
         painter.setFont(option.font)
         marker = text.find("  (")
         if marker < 0:
@@ -26,7 +33,13 @@ class MemberDelegate(QStyledItemDelegate):
             painter.setPen(base_color)
             painter.drawText(rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, name)
             x = rect.left() + QFontMetrics(option.font).horizontalAdvance(name)
-            painter.setPen(self.PARAM_COLOR if not option.state & QStyle.StateFlag.State_Selected else QColor("#fff1c9"))
+            if option.state & QStyle.StateFlag.State_Selected:
+                parameter_color = QColor("#fff1c9")
+            elif duplicate:
+                parameter_color = QColor("#dca8ac")
+            else:
+                parameter_color = self.PARAM_COLOR
+            painter.setPen(parameter_color)
             tail_rect = rect.adjusted(x - rect.left(), 0, 0, 0)
             painter.drawText(tail_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, tail)
         painter.restore()

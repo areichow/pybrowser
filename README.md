@@ -218,3 +218,12 @@ A full LSP client is deferred. The current design combines native AST/symbol-tab
 - Method-kind conversion currently requires a single-line signature.
 - Categories exist only when at least one Member carries category metadata or qualifies for an inferred category.
 - PySide6 UI tests require a Qt-capable test environment; non-UI parser and structural tests run independently.
+
+
+## Revision 11.1 selection and duplicate-definition fixes
+
+- Save and structural writes now clear the pending-edit state before rebuilding Browser panes, preventing abandon prompts during a successful save.
+- Browser pane restoration is performed under signal blockers as one internal reload transaction.
+- Renaming a Member preserves its source-order selection even though its label changes.
+- Duplicating a Member keeps the original class and category selected and selects the newly inserted duplicate.
+- Duplicate methods and functions in one scope are painted light red (`#dca8ac`) in the Members pane and include a duplicate-definition tooltip. Native semantic diagnostics continue to report the same condition.

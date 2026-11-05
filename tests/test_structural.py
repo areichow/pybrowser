@@ -1,7 +1,7 @@
 from pathlib import Path
 from pybrowser.model import Document
 from pybrowser.parser import build_index, validate
-from pybrowser.structural import add_class, add_function, add_method, convert_method_kind, delete_member, move_member
+from pybrowser.structural import add_class, add_function, add_method, convert_method_kind, delete_member, duplicate_member, move_member
 
 
 def doc(text):
@@ -78,3 +78,15 @@ def test_move_inserts_class_indentation():
     scope = next(item for item in document.scopes if item.name == "App")
     moved = move_member(document, real(scope)[0], "search")
     assert "    # category: search\n    def focus" in moved.text
+
+
+def test_duplicate_method_is_adjacent_and_semantically_duplicate():
+    from pybrowser.semantic import analyze_source
+    source = "class ActivityIndicator:\n    def start(self):\n        pass\n"
+    document = doc(source)
+    scope = next(item for item in document.scopes if item.name == "ActivityIndicator")
+    duplicated = duplicate_member(document, real(scope)[0])
+    assert duplicated.text.count("def start(self):") == 2
+    assert duplicated.text.index("def start(self):") < duplicated.text.rindex("def start(self):")
+    semantic = analyze_source(Path("x.py"), duplicated.text)
+    assert any(item.rule == "duplicate-definition" and "start" in item.message for item in semantic.diagnostics)
