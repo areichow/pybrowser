@@ -61,3 +61,12 @@ py -3.14 -m pytest
 - Long-running world scans report the current module and completed/total counts.
 - Implementers and Senders windows show a bright yellow `Unsaved changes` banner, bold/yellow current result, and the standard modified-window marker until Ctrl+S or Ctrl+L clears the edit.
 - Existing background indexing now reports through the same activity strip rather than only the transient status bar.
+
+
+## Revision 10.2 window lifecycle and model refresh
+
+- `Ctrl+W` closes the currently focused PyBrowser, File View, Implementers, or Senders window through its normal unsaved-edit safety check.
+- `Ctrl+Q` requests a safe application-wide shutdown by closing all top-level windows; any unsaved-edit rejection prevents that window from closing.
+- Console `Ctrl+C` is integrated with the Qt event loop through a SIGINT handler and a 200 ms Qt timer, then requests the same normal close-all-windows path.
+- Every successful module load now refreshes that browser's `ModuleIndexCache`. Workspace file-change broadcasts explicitly invalidate the changed module and re-index it even when another module is selected. New classes, functions, and methods saved from File View or another browser therefore become available to `Ctrl+B`, `Ctrl+T`, Implementers, and Senders.
+- File View and query windows are independent top-level windows without a transient parent, allowing normal raising, side-by-side placement, and taskbar/window-manager control.

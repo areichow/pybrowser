@@ -5,11 +5,13 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox
 from .editor import Editor
 from ..parser import ParseError, read_document, validate
 from ..saving import atomic_write, changed
+from ..window_commands import install_window_commands
 
 
 class FileViewWindow(QMainWindow):
     def __init__(self, path: Path, workspace, line=1, parent=None):
-        super().__init__(parent)
+        # File Views are independent top-level windows, not transient child windows.
+        super().__init__(None)
         self.path = Path(path).resolve()
         self.workspace = workspace
         self.document_model = read_document(self.path)
@@ -25,7 +27,9 @@ class FileViewWindow(QMainWindow):
         save = QAction("Save", self); save.setShortcut(QKeySequence.StandardKey.Save); save.triggered.connect(self.save)
         abandon = QAction("Abandon Changes", self); abandon.setShortcut("Ctrl+L"); abandon.triggered.connect(self.abandon)
         self.addActions([save, abandon])
-        self.menuBar().addMenu("&File").addActions([save, abandon])
+        file_menu = self.menuBar().addMenu("&File")
+        file_menu.addActions([save, abandon])
+        install_window_commands(self, file_menu)
         self.goto_line(line)
 
     def goto_line(self, line):

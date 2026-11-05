@@ -22,3 +22,13 @@ def test_cache_retain_removes_deleted_world_members(tmp_path):
     cache.retain({one})
     assert cache.get(one) is not None
     assert cache.get(two) is None
+
+
+def test_explicit_invalidate_removes_cached_module(tmp_path):
+    path = tmp_path / "new_class.py"
+    path.write_text("class NewClass:\n    pass\n")
+    cache = ModuleIndexCache()
+    cache.put(path, ())
+    assert cache.get(path) is not None
+    cache.invalidate(path)
+    assert cache.get(path) is None

@@ -49,5 +49,8 @@ class ModuleIndexCache:
         resolved = {path.resolve() for path in paths}
         self._items = {path: item for path, item in self._items.items() if path in resolved}
 
+    def invalidate(self, path: Path) -> None:
+        self._items.pop(path.resolve(), None)
+
     def clear(self) -> None:
         self._items.clear()

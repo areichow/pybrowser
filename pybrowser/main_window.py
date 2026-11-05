@@ -35,6 +35,7 @@ from .widgets.typecheck_preferences import TypeCheckPreferencesDialog
 from .typecheck_worker import TypeCheckSignals, TypeCheckTask
 from .theme import apply_theme
 from .conventions import category_sort_key, display_scope, is_special_category
+from .window_commands import install_window_commands
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
 from PySide6.QtWidgets import QTextEdit
@@ -274,6 +275,7 @@ class MainWindow(QMainWindow):
         navigate_menu = self.menuBar().addMenu("&Navigate")
         navigate_menu.addActions([quick_module_action, quick_symbol_action, back_action, forward_action, goto_action])
         self.addActions([open_action, save_action, find_action, next_action, replace_action, abandon_action, new_browser_action, typecheck_action, quick_module_action, quick_symbol_action, project_find_action, back_action, forward_action, goto_action])
+        install_window_commands(self, file_menu)
 
     def _typecheck_preferences(self):
         return {
@@ -704,6 +706,7 @@ class MainWindow(QMainWindow):
     def _open_module(self, path, restore=None):
         try:
             self.doc = read_document(Path(path))
+            self.index_cache.put(self.doc.path, self.doc.scopes)
         except Exception as exc:
             QMessageBox.critical(self, "Cannot open module", str(exc))
             return
@@ -1029,7 +1032,7 @@ class MainWindow(QMainWindow):
     def _view_in_file(self, line=1):
         if not self.doc:
             return
-        window = FileViewWindow(self.doc.path, self.workspace, line, self)
+        window = FileViewWindow(self.doc.path, self.workspace, line)
         window.show()
         self.child_windows.append(window)
 
@@ -1045,7 +1048,7 @@ class MainWindow(QMainWindow):
         menu.exec(self.modules.viewport().mapToGlobal(position))
 
     def _open_file_view_path(self, path, line=1):
-        window = FileViewWindow(path, self.workspace, line, self)
+        window = FileViewWindow(path, self.workspace, line)
         window.show()
         self.child_windows.append(window)
 
@@ -1110,14 +1113,19 @@ class MainWindow(QMainWindow):
         self.child_windows.append(window)
 
     def _workspace_file_changed(self, path, origin):
-        if origin is self or not self.doc or Path(path) != self.doc.path:
-            return
-        if self.editor.document().isModified():
-            self.statusBar().showMessage("File changed in another workspace window; save is blocked until you reload", 7000)
-            return
-        location = (self.member.scope, self.member.category, self.member.label) if self.member else None
-        self.index_cache.put(self.doc.path, None)
-        self._open_module(self.doc.path, location)
+        path = Path(path).resolve()
+        self.index_cache.invalidate(path)
+        if self.doc and path == self.doc.path:
+            if self.editor.document().isModified():
+                self.statusBar().showMessage("File changed in another workspace window; save is blocked until you reload", 7000)
+                return
+            location = (self.member.scope, self.member.category, self.member.label) if self.member else None
+            self._open_module(path, location)
+        else:
+            # Re-index changed modules even when another module is selected so
+            # Ctrl+B, Ctrl+T, Implementers, and Senders see new definitions.
+            self._start_background_index()
+
 
     def _members_context_menu(self, position):
         member = self.member
@@ -1231,7 +1239,7 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "Source model query failed", message)
 
     def _show_code_query_dialog(self, title, results):
-        dialog = CodeQueryDialog(title, results, self.workspace, self)
+        dialog = CodeQueryDialog(title, results, self.workspace)
         dialog.navigate_requested.connect(self._navigate_code_query_result)
         dialog.show()
         self.child_windows.append(dialog)

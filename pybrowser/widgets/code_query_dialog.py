@@ -5,13 +5,14 @@ from PySide6.QtWidgets import QDialog, QLabel, QListWidget, QMessageBox, QSplitt
 from .editor import Editor
 from ..parser import ParseError, read_document, replacement, validate
 from ..saving import atomic_write, changed
+from ..window_commands import install_window_commands
 
 
 class CodeQueryDialog(QDialog):
     navigate_requested = Signal(object)
 
     def __init__(self, title, results, workspace, parent=None):
-        super().__init__(parent)
+        super().__init__(None)
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.workspace = workspace
@@ -35,6 +36,8 @@ class CodeQueryDialog(QDialog):
         save = QAction("Save", self); save.setShortcut(QKeySequence.StandardKey.Save); save.triggered.connect(self.save)
         abandon = QAction("Abandon", self); abandon.setShortcut("Ctrl+L"); abandon.triggered.connect(self.abandon)
         self.addActions([save, abandon])
+        file_menu = self.menuBar().addMenu("&File") if hasattr(self, "menuBar") else None
+        install_window_commands(self, file_menu)
         if self.results.count(): self.results.setCurrentRow(0)
 
     def _modified_changed(self, modified):
