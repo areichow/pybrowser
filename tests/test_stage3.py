@@ -72,7 +72,7 @@ def test_category_level_member_for_contiguous_run():
     scope = build_index(Path("example.py"), source)[0]
     assert scope.members[0].label == "<entire category>"
     assert scope.members[0].synthetic
-    assert scope.members[0].span.start == 0
+    assert scope.members[0].span.start == source.index("A = 1")
     assert scope.members[0].span.end == len(source)
 
 def test_every_direct_statement_appears_once_excluding_synthetic():

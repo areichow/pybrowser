@@ -695,7 +695,7 @@ class MainWindow(QMainWindow):
     def _file_changed(self, path):
         if self.doc and Path(path) == self.doc.path and not self.editor.document().isModified():
             self.statusBar().showMessage("Current module changed outside PyBrowser; reloading", 5000)
-            location = (str(self.doc.path), self.member.scope, self.member.category, self.member.label) if self.member else None
+            location = (self.member.scope, self.member.category, self.member.label) if self.member else None
             self._open_module(self.doc.path, location)
 
     def _start_background_index(self):

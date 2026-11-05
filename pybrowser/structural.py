@@ -15,6 +15,27 @@ class StructuralEditError(ValueError):
     pass
 
 
+def _line_start(text: str, offset: int) -> int:
+    return text.rfind("\n", 0, offset) + 1
+
+def _category_directive_span(document: Document, member: Member):
+    """Return the category directive immediately associated with a member."""
+    start = _line_start(document.text, member.span.start)
+    cursor = start
+    while cursor > 0:
+        previous_end = cursor - 1
+        previous_start = document.text.rfind("\n", 0, previous_end) + 1
+        line = document.text[previous_start:previous_end].rstrip("\r")
+        stripped = line.strip()
+        match = CATEGORY_RE.fullmatch(line)
+        if match:
+            return previous_start, cursor, match
+        if stripped and not stripped.startswith("@") and not stripped.startswith("#"):
+            break
+        cursor = previous_start
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class StructuralEdit:
     text: str
@@ -96,7 +117,9 @@ def add_method(document: Document, scope: str, name: str, category: str, method_
 def delete_member(document: Document, member: Member) -> StructuralEdit:
     if member.synthetic:
         raise StructuralEditError("Select an individual entity before deleting")
-    text = document.text[:member.span.start] + document.text[member.span.end:]
+    directive = _category_directive_span(document, member)
+    start = directive[0] if directive else member.span.start
+    text = document.text[:start] + document.text[member.span.end:]
     text = re.sub(r"(?:\r?\n){3,}", document.newline * 2, text)
     return StructuralEdit(text, member.scope, member.category, "")
 
@@ -115,17 +138,21 @@ def move_member(document: Document, member: Member, category: str) -> Structural
     category = category.strip()
     if not category:
         raise StructuralEditError("Category cannot be empty")
-    source = document.source(member)
-    match = CATEGORY_RE.match(source)
-    directive = f"# category: {category}"
-    if match:
-        indent = match.group("indent")
-        source = CATEGORY_RE.sub(indent + directive, source, count=1)
+    directive = _category_directive_span(document, member)
+    text = document.text
+    if directive:
+        start, end, match = directive
+        replacement = f"{match.group('indent')}# category: {category}{document.newline}"
+        text = text[:start] + replacement + text[end:]
     else:
-        first = source.splitlines()[0] if source.splitlines() else ""
-        indent = first[: len(first) - len(first.lstrip())]
-        source = indent + directive + document.newline + source
-    text = document.text[:member.span.start] + source + document.text[member.span.end:]
+        source_line_start = _line_start(text, member.span.start)
+        source_line_end = text.find("\n", source_line_start)
+        if source_line_end < 0:
+            source_line_end = len(text)
+        line = text[source_line_start:source_line_end]
+        indent = line[: len(line) - len(line.lstrip())]
+        metadata = f"{indent}# category: {category}{document.newline}"
+        text = text[:source_line_start] + metadata + text[source_line_start:]
     return StructuralEdit(text, member.scope, category, member.label)
 
 
@@ -133,18 +160,21 @@ def rename_category(document: Document, old: str, new: str, scope: str | None = 
     new = new.strip()
     if not new:
         raise StructuralEditError("Category cannot be empty")
-    spans = []
+    directives = {}
     for parsed_scope in document.scopes:
         if scope and parsed_scope.name != scope:
             continue
         for member in parsed_scope.members:
-            if not member.synthetic and member.category == old:
-                spans.append((member.span.start, member.span.end))
+            if member.synthetic or member.category != old:
+                continue
+            directive = _category_directive_span(document, member)
+            if directive:
+                start, end, match = directive
+                directives[(start, end)] = match
     text = document.text
-    for start, end in sorted(set(spans), reverse=True):
-        source = text[start:end]
-        source = CATEGORY_RE.sub(lambda m: f"{m.group('indent')}# category: {new}", source, count=1)
-        text = text[:start] + source + text[end:]
+    for (start, end), match in sorted(directives.items(), reverse=True):
+        replacement = f"{match.group('indent')}# category: {new}{document.newline}"
+        text = text[:start] + replacement + text[end:]
     if text == document.text:
         raise StructuralEditError("No explicit category directives were available to rename")
     return StructuralEdit(text, scope or "<module>", new, "")

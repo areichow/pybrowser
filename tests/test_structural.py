@@ -42,3 +42,39 @@ def test_convert_method_kind():
     assert "@classmethod" in converted.text
     assert "def run(cls, value):" in converted.text
     validate(converted.text, "x.py")
+
+
+def test_category_metadata_is_not_in_editable_entity_source():
+    source = "class App:\n    # category: search\n    def focus(self):\n        pass\n"
+    document = doc(source)
+    scope = next(item for item in document.scopes if item.name == "App")
+    member = real(scope)[0]
+    assert document.source(member).startswith("    def focus")
+    assert "# category:" not in document.source(member)
+
+def test_move_replaces_existing_metadata_without_duplication():
+    source = "class App:\n    # category: old\n    def focus(self):\n        pass\n"
+    document = doc(source)
+    scope = next(item for item in document.scopes if item.name == "App")
+    moved = move_member(document, real(scope)[0], "search")
+    assert moved.text.count("# category:") == 1
+    assert "    # category: search\n    def focus" in moved.text
+    moved_doc = doc(moved.text)
+    moved_scope = next(item for item in moved_doc.scopes if item.name == "App")
+    assert real(moved_scope)[0].category == "search"
+
+
+def test_delete_removes_associated_category_metadata():
+    source = "class App:\n    # category: search\n    def focus(self):\n        pass\n"
+    document = doc(source)
+    scope = next(item for item in document.scopes if item.name == "App")
+    deleted = delete_member(document, real(scope)[0])
+    assert "# category:" not in deleted.text
+    assert "def focus" not in deleted.text
+
+def test_move_inserts_class_indentation():
+    source = "class App:\n    def focus(self):\n        pass\n"
+    document = doc(source)
+    scope = next(item for item in document.scopes if item.name == "App")
+    moved = move_member(document, real(scope)[0], "search")
+    assert "    # category: search\n    def focus" in moved.text

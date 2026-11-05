@@ -32,3 +32,11 @@ py -3.14 -m pip install -e .[dev]
 py -3.14 -m pybrowser
 py -3.14 -m pytest
 ```
+
+
+## Revision 8.1 fixes
+
+- Fixes the `QFileSystemWatcher` reload restore tuple so external and structural writes restore the selected scope/category/member without a `TypeError`.
+- Treats `# category:` as browser metadata rather than editable entity source; method editors now begin at decorators or `def`.
+- Moving an entity replaces its associated category directive in place or inserts one immediately before the entity without duplication.
+- Renaming categories continues to operate on metadata even though directives are no longer included in entity source spans.
