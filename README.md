@@ -26,3 +26,9 @@ py -3.14 -m pytest
 ## Find bar
 
 The always-visible Find bar sits between the four browser columns and source editor. `Ctrl+F` focuses and selects the query field, Enter starts a search, and `Ctrl+G` advances to the next match with wraparound. The **Current method/entity only** checkbox switches between the displayed entity and the complete open file. The indicator reports `1/6 matches` style progress. File-wide search uses the in-memory edited entity when it has unsaved changes.
+
+## Revision 3.2 fixes
+
+- Uses `QTextEdit.ExtraSelection`, the correct PySide6 owner for editor extra selections.
+- Recalculates current-entity matches directly from the visible editor text after navigation or editing.
+- Keeps the match indicator scoped to the checked search mode.

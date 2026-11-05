@@ -1,15 +1,19 @@
 from pathlib import Path
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QMainWindow, QMessageBox, QPlainTextEdit, QSplitter, QStatusBar,
+    QMainWindow, QMessageBox, QSplitter, QStatusBar,
     QVBoxLayout, QWidget,
 )
 from .parser import ParseError, read_document, replacement, validate
 from .saving import atomic_write, changed
 from .search import SearchMatch, find_all
 from .widgets.editor import Editor
+
+# PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
+from PySide6.QtWidgets import QTextEdit
+QPlainTextEditExtraSelection = QTextEdit.ExtraSelection
 
 class MainWindow(QMainWindow):
     def __init__(self, path=None):
@@ -215,7 +219,7 @@ class MainWindow(QMainWindow):
         self.editor.setTextCursor(cursor)
         self.editor.centerCursor()
         self.editor.setFocus()
-        selection = QPlainTextEdit.ExtraSelection()
+        selection = QPlainTextEditExtraSelection()
         selection.cursor = cursor
         selection.format.setBackground(QColor("#7a5f00"))
         selection.format.setForeground(QColor("#ffffff"))
@@ -232,10 +236,15 @@ class MainWindow(QMainWindow):
             self.match_indicator.setText("0 matches")
 
     def _modified(self):
-        if not self.loading:
-            self.setWindowModified(self.editor.document().isModified())
-            if self.search_source:
-                self._search_text_changed()
+        if self.loading:
+            return
+        self.setWindowModified(self.editor.document().isModified())
+        if self.find_text.text() and self.current_entity_only.isChecked():
+            # Keep the entity-only count tied to exactly what is visible in the editor.
+            self.execute_find()
+        elif self.search_source:
+            # File offsets are stale after an edit; require Enter or Ctrl+G to rebuild them.
+            self._search_text_changed()
 
     def _confirm_discard(self):
         if not self.editor.document().isModified():
@@ -320,8 +329,8 @@ class MainWindow(QMainWindow):
             self.editor.clear()
         self.loading = False
         self.setWindowModified(False)
-        if self.search_source == "entity":
-            self._search_text_changed()
+        if self.find_text.text() and self.current_entity_only.isChecked():
+            self.execute_find()
 
     def save(self):
         if not self.doc or not self.member:
