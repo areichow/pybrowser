@@ -28,3 +28,9 @@ py -3.14 -m pytest
 - Editor and Members context menus provide **Implementers of...**.
 - Members context menu provides **Senders of...**.
 - Multi-result query windows provide a result list and syntax-highlighted source preview; double-click navigates the main browser.
+
+
+#### Revision 7.2
+- Centralizes the source-code font in `pybrowser.appearance`.
+- Every shared `Editor` automatically uses 0xProto Nerd Font at 11 points.
+- Implementers and Senders previews now match the main editor, and future shared-editor dialogs inherit the same font.

@@ -1,6 +1,6 @@
 from pathlib import Path
 from PySide6.QtCore import QFileSystemWatcher, QPoint, QSettings, QSignalBlocker, QThreadPool, QTimer, Qt
-from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QTextCursor
+from PySide6.QtGui import QAction, QColor, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
     QMainWindow, QMenu, QMessageBox, QSplitter, QStatusBar, QTreeWidget, QTreeWidgetItem,
@@ -111,9 +111,6 @@ class MainWindow(QMainWindow):
         self.editor = Editor()
         self.editor.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.editor.customContextMenuRequested.connect(self._editor_context_menu)
-        font = QFont("0xProto Nerd Font", 11)
-        font.setStyleHint(QFont.StyleHint.Monospace)
-        self.editor.setFont(font)
         self.editor.textChanged.connect(self._modified)
 
         lower = QWidget()

@@ -1,5 +1,6 @@
 from PySide6.QtGui import QColor,QFont,QSyntaxHighlighter,QTextCharFormat
 from PySide6.QtWidgets import QPlainTextEdit
+from ..appearance import apply_code_font
 import re
 class Highlighter(QSyntaxHighlighter):
     def __init__(self,doc):
@@ -11,4 +12,4 @@ class Highlighter(QSyntaxHighlighter):
             for m in regex.finditer(text):self.setFormat(m.start(),m.end()-m.start(),fmt)
 class Editor(QPlainTextEdit):
     def __init__(self):
-        super().__init__();self.setLineWrapMode(self.LineWrapMode.NoWrap);self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ")*4);self.highlighter=Highlighter(self.document())
+        super().__init__();apply_code_font(self);self.setLineWrapMode(self.LineWrapMode.NoWrap);self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ")*4);self.highlighter=Highlighter(self.document())
