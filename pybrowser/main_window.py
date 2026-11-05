@@ -54,6 +54,8 @@ class MainWindow(QMainWindow):
         self.world: World | None = self.workspace.world
         self.child_windows = []
         self.module_entries: dict[str, ModuleEntry] = {}
+        self.module_tree_items = {}
+        self.opening_world = False
         self.settings = QSettings("PyBrowser", "PyBrowser")
         self.thread_pool = QThreadPool.globalInstance()
         self.index_cache = ModuleIndexCache()
@@ -61,7 +63,7 @@ class MainWindow(QMainWindow):
         self.index_generation = 0
         self.index_cancelled = Event()
         self.index_signals = IndexSignals()
-        self.index_signals.result.connect(self._index_result)
+        self.index_signals.results.connect(self._index_results)
         self.index_signals.progress.connect(self._index_progress)
         self.index_signals.finished.connect(self._index_finished)
         self.typecheck_signals = TypeCheckSignals()
@@ -727,28 +729,47 @@ class MainWindow(QMainWindow):
             self._open_module(path, restore)
 
     def open_world_path(self, path, restore=None):
+        if self.opening_world:
+            return
+        self.opening_world = True
+        # Invalidate old results before changing any tree/model objects. This is
+        # especially important when a Recent Worlds action is used during indexing.
+        self.refresh_timer.stop()
+        self.index_cancelled.set()
+        self.index_generation += 1
         try:
             world = open_world(Path(path))
+            self._watch_none()
+            self.world = world
+            self.workspace.set_world(world)
+            self.doc = None
+            self.scope = None
+            self.member = None
+            self.semantic_modules.clear()
+            self.index_cache.clear()
+            self._populate_module_tree()
+            self._watch_world()
+            self._remember_world(world.root if not world.single_file else world.modules[0].path)
+            title = world.modules[0].path.name if world.single_file else world.root.name
+            self.setWindowTitle(title + "[*] - PyBrowser")
+            self.statusBar().showMessage(f"Opened {len(world.modules)} Python module(s)", 5000)
+            if restore and isinstance(restore, tuple) and len(restore) == 4:
+                module_path, scope, category, label = restore
+                self._select_module_path(Path(module_path), (scope, category, label))
+            elif world.modules:
+                self._select_module_path(world.modules[0].path)
+            # Let the first module paint before starting child processes.
+            QTimer.singleShot(0, self._start_background_index)
         except Exception as exc:
             QMessageBox.critical(self, "Cannot open world", str(exc))
-            return
-        self.world = world
-        self.workspace.set_world(world)
-        self.doc = None
-        self.scope = None
-        self.member = None
-        self._populate_module_tree()
-        self._watch_world()
-        self._start_background_index()
-        self._remember_world(world.root if not world.single_file else world.modules[0].path)
-        title = world.modules[0].path.name if world.single_file else world.root.name
-        self.setWindowTitle(title + "[*] - PyBrowser")
-        self.statusBar().showMessage(f"Opened {len(world.modules)} Python module(s)", 5000)
-        if restore and isinstance(restore, tuple) and len(restore) == 4:
-            module_path, scope, category, label = restore
-            self._select_module_path(Path(module_path), (scope, category, label))
-        elif world.modules:
-            self._select_module_path(world.modules[0].path)
+        finally:
+            self.opening_world = False
+
+    def _watch_none(self):
+        existing = self.watcher.directories() + self.watcher.files()
+        if existing:
+            self.watcher.removePaths(existing)
+
 
     def _open_module(self, path, restore=None, fallback_row=None):
         try:
@@ -793,6 +814,7 @@ class MainWindow(QMainWindow):
         self.loading = True
         self.modules.clear()
         self.module_entries.clear()
+        self.module_tree_items.clear()
         nodes = {}
         for entry in self.world.modules:
             parent = self.modules.invisibleRootItem()
@@ -824,6 +846,7 @@ class MainWindow(QMainWindow):
             self._apply_summary(leaf, parts[-1] + ("  [parse error]" if cached and cached.error else ""), summary, leaf.toolTip(0), tree=True)
             parent.addChild(leaf)
             self.module_entries[key] = entry
+            self.module_tree_items[key] = leaf
         self.modules.expandAll()
         self.loading = False
 
@@ -879,9 +902,7 @@ class MainWindow(QMainWindow):
 
 
     def _watch_world(self):
-        existing = self.watcher.directories() + self.watcher.files()
-        if existing:
-            self.watcher.removePaths(existing)
+        self._watch_none()
         if self.world and not self.world.single_file:
             directories = {str(self.world.root)}
             directories.update(str(item.path.parent) for item in self.world.modules)
@@ -931,15 +952,25 @@ class MainWindow(QMainWindow):
         self.busy_indicator.begin("Source model indexing", len(modules))
         self.statusBar().showMessage(f"Indexing 0/{len(modules)} modules...")
 
-    def _index_result(self, result: ModuleIndexResult):
-        if result.generation != self.index_generation:
+    def _index_results(self, results):
+        if not results:
             return
-        self.index_cache.put(result.path, result.scopes, result.error)
-        if result.semantic is not None:
-            self.semantic_modules[result.path.resolve()] = result.semantic
-        else:
-            self.semantic_modules.pop(result.path.resolve(), None)
-        self._update_module_tree_item(result.path)
+        generation = results[0].generation
+        if generation != self.index_generation:
+            return
+        self.modules.setUpdatesEnabled(False)
+        try:
+            for result in results:
+                self.index_cache.put(result.path, result.scopes, result.error)
+                if result.semantic is not None:
+                    self.semantic_modules[result.path.resolve()] = result.semantic
+                else:
+                    self.semantic_modules.pop(result.path.resolve(), None)
+                self._update_module_tree_item(result.path)
+        finally:
+            self.modules.setUpdatesEnabled(True)
+            self.modules.viewport().update()
+
 
     def _index_progress(self, generation, completed, total):
         if generation == self.index_generation:
@@ -961,24 +992,20 @@ class MainWindow(QMainWindow):
 
     def _update_module_tree_item(self, path):
         target = str(Path(path).resolve())
-        queue = [self.modules.topLevelItem(i) for i in range(self.modules.topLevelItemCount())]
-        while queue:
-            item = queue.pop(0)
-            if item.data(0, Qt.ItemDataRole.UserRole) == target:
-                entry = self.module_entries.get(target)
-                cached = self.index_cache.get(Path(target))
-                if entry and cached:
-                    label = entry.relative_path.name + ("  [parse error]" if cached.error else "")
-                    if cached.error:
-                        item.setText(0, "✕ " + label)
-                        item.setForeground(0, QColor("#f07178"))
-                        item.setToolTip(0, entry.dotted_name + "\n" + cached.error)
-                    else:
-                        count = sum(len(scope.members) for scope in cached.scopes or ())
-                        base = f"{entry.dotted_name}\n{len(cached.scopes or ())} scope(s), {count} browser item(s)"
-                        self._apply_summary(item, label, self._diagnostics().module(Path(target)), base, tree=True)
-                return
-            queue.extend(item.child(i) for i in range(item.childCount()))
+        item = self.module_tree_items.get(target)
+        entry = self.module_entries.get(target)
+        cached = self.index_cache.get(Path(target))
+        if item is None or entry is None or cached is None:
+            return
+        label = entry.relative_path.name + ("  [parse error]" if cached.error else "")
+        if cached.error:
+            item.setText(0, "✕ " + label)
+            item.setForeground(0, QColor("#f07178"))
+            item.setToolTip(0, entry.dotted_name + "\n" + cached.error)
+        else:
+            count = sum(len(scope.members) for scope in cached.scopes or ())
+            base = f"{entry.dotted_name}\n{len(cached.scopes or ())} scope(s), {count} browser item(s)"
+            self._apply_summary(item, label, self._diagnostics().module(Path(target)), base, tree=True)
 
 
     def _recent_worlds(self):

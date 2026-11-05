@@ -239,3 +239,10 @@ Unsaved Member state retains precedence: a changed Member remains bold bright ye
 ## Revision 11.3 save-selection persistence
 
 A save now preserves a full Browser bookmark: Module path, Scope, Category, Member label, Member row, and editor cursor position. Atomic file replacement can trigger both file and directory watcher events; delayed folder refreshes restore that bookmark instead of reopening the module at its first Member. Programmatic Module selection is performed under `QSignalBlocker`, so `currentItemChanged` cannot cause an unbookmarked second open. A Browser also ignores its own synchronous Workspace file-change broadcast because the writing Browser already performs the precise post-save reparse and restoration; other workspace windows continue to receive and process the broadcast. Renamed Members fall back to the same source-order row when the old label no longer exists.
+
+
+## Revision 11.4 stable world switching and large-repository indexing
+
+Opening a Recent World now cancels and invalidates the previous indexing generation before any Module-tree or watcher objects are replaced. The refresh timer is stopped, old filesystem watches are removed, semantic and index caches are cleared, and opening is guarded against re-entry. Stale result batches are discarded by generation before touching Qt items. This closes the race where an old indexing task could deliver results while a Recent Worlds action rebuilt the tree, a plausible cause of the native Windows crash dialog.
+
+World indexing now uses up to four child Python processes through `ProcessPoolExecutor`. LibCST, AST, and symbol-table parsing therefore no longer hold the main Qt process's Python GIL while indexing large repositories such as Django. Results are returned to Qt in batches of 24 modules, Module-tree repainting is suspended for each batch, and module items are updated through a direct path-to-item map rather than an O(n) tree scan for every result. Progress updates occur once per batch rather than once per file. The first selected module is painted before child-process indexing starts.

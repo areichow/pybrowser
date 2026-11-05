@@ -54,3 +54,20 @@ def test_workspace_writer_does_not_reload_its_own_save_broadcast():
     source = Path("pybrowser/main_window.py").read_text()
     method = source[source.index("    def _workspace_file_changed"):source.index("    def _members_context_menu", source.index("    def _workspace_file_changed"))]
     assert "if origin is self:" in method
+
+
+def test_world_switch_invalidates_old_index_before_tree_mutation():
+    source = Path("pybrowser/main_window.py").read_text()
+    method = source[source.index("    def open_world_path"):source.index("    def _watch_none", source.index("    def open_world_path"))]
+    assert method.index("self.index_cancelled.set()") < method.index("self._populate_module_tree()")
+    assert method.index("self.index_generation += 1") < method.index("self._populate_module_tree()")
+
+
+def test_large_world_results_are_batched_and_tree_lookup_is_constant_time():
+    indexing = Path("pybrowser/indexing.py").read_text()
+    main = Path("pybrowser/main_window.py").read_text()
+    assert "ProcessPoolExecutor" in indexing
+    assert "BATCH_SIZE = 24" in indexing
+    update = main[main.index("    def _update_module_tree_item"):main.index("    def _recent_worlds", main.index("    def _update_module_tree_item"))]
+    assert "self.module_tree_items.get(target)" in update
+    assert "while queue" not in update
