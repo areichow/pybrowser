@@ -1,5 +1,5 @@
 from pathlib import Path
-from PySide6.QtCore import QFileSystemWatcher, QSettings, Qt
+from PySide6.QtCore import QFileSystemWatcher, QSettings, QThreadPool, QTimer, Qt
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -8,6 +8,9 @@ from PySide6.QtWidgets import (
 )
 from .parser import ParseError, read_document, replacement, validate
 from .project import ModuleEntry, World, open_world
+from .index_cache import ModuleIndexCache
+from .indexing import IndexSignals, IndexWorldTask, ModuleIndexResult
+from threading import Event
 from .saving import atomic_write, changed
 from .search import SearchMatch, find_all
 from .widgets.editor import Editor
@@ -23,6 +26,18 @@ class MainWindow(QMainWindow):
         self.world: World | None = None
         self.module_entries: dict[str, ModuleEntry] = {}
         self.settings = QSettings("PyBrowser", "PyBrowser")
+        self.thread_pool = QThreadPool.globalInstance()
+        self.index_cache = ModuleIndexCache()
+        self.index_generation = 0
+        self.index_cancelled = Event()
+        self.index_signals = IndexSignals()
+        self.index_signals.result.connect(self._index_result)
+        self.index_signals.progress.connect(self._index_progress)
+        self.index_signals.finished.connect(self._index_finished)
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.setSingleShot(True)
+        self.refresh_timer.setInterval(250)
+        self.refresh_timer.timeout.connect(self._refresh_world)
         self.watcher = QFileSystemWatcher(self)
         self.watcher.directoryChanged.connect(self._world_changed)
         self.watcher.fileChanged.connect(self._file_changed)
@@ -297,6 +312,7 @@ class MainWindow(QMainWindow):
         self.member = None
         self._populate_module_tree()
         self._watch_world()
+        self._start_background_index()
         self._remember_world(world.root if not world.single_file else world.modules[0].path)
         title = world.modules[0].path.name if world.single_file else world.root.name
         self.setWindowTitle(title + "[*] - PyBrowser")
@@ -345,7 +361,16 @@ class MainWindow(QMainWindow):
             leaf = QTreeWidgetItem([parts[-1]])
             key = str(entry.path)
             leaf.setData(0, Qt.ItemDataRole.UserRole, key)
-            leaf.setToolTip(0, entry.dotted_name)
+            cached = self.index_cache.get(entry.path)
+            if cached and cached.error:
+                leaf.setText(0, parts[-1] + "  [parse error]")
+                leaf.setToolTip(0, entry.dotted_name + "\n" + cached.error)
+                leaf.setForeground(0, QColor("#e06c75"))
+            elif cached:
+                symbol_count = sum(len(scope.members) for scope in cached.scopes or ())
+                leaf.setToolTip(0, f"{entry.dotted_name}\n{len(cached.scopes or ())} scope(s), {symbol_count} browser item(s)")
+            else:
+                leaf.setToolTip(0, entry.dotted_name + "\nPending background index")
             parent.addChild(leaf)
             self.module_entries[key] = entry
         self.modules.expandAll()
@@ -390,12 +415,19 @@ class MainWindow(QMainWindow):
             self.watcher.addPath(str(self.doc.path))
 
     def _world_changed(self, _path):
+        if self.world and not self.world.single_file:
+            self.refresh_timer.start()
+
+    def _refresh_world(self):
         if not self.world or self.world.single_file:
             return
         current = self.doc.path if self.doc else None
         try:
             self.world = open_world(self.world.root)
+            self.index_cache.retain({entry.path for entry in self.world.modules})
             self._populate_module_tree()
+            self._watch_world()
+            self._start_background_index()
             if current and current.exists():
                 self._select_module_path(current)
         except OSError as exc:
@@ -406,6 +438,56 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Current module changed outside PyBrowser; reloading", 5000)
             location = (str(self.doc.path), self.member.scope, self.member.category, self.member.label) if self.member else None
             self._open_module(self.doc.path, location)
+
+    def _start_background_index(self):
+        self.index_cancelled.set()
+        self.index_cancelled = Event()
+        self.index_generation += 1
+        generation = self.index_generation
+        modules = tuple(entry for entry in self.world.modules if self.index_cache.get(entry.path) is None)
+        if not modules:
+            self.statusBar().showMessage(f"World ready: {len(self.world.modules)} module(s)", 4000)
+            return
+        task = IndexWorldTask(modules, generation, self.index_signals, self.index_cancelled)
+        self.thread_pool.start(task)
+        self.statusBar().showMessage(f"Indexing 0/{len(modules)} modules...")
+
+    def _index_result(self, result: ModuleIndexResult):
+        if result.generation != self.index_generation:
+            return
+        self.index_cache.put(result.path, result.scopes, result.error)
+        self._update_module_tree_item(result.path)
+
+    def _index_progress(self, generation, completed, total):
+        if generation == self.index_generation:
+            self.statusBar().showMessage(f"Indexing {completed}/{total} modules...")
+
+    def _index_finished(self, generation):
+        if generation != self.index_generation:
+            return
+        errors = sum(1 for entry in self.world.modules if (cached := self.index_cache.get(entry.path)) and cached.error)
+        suffix = f", {errors} parse error(s)" if errors else ""
+        self.statusBar().showMessage(f"Indexed {len(self.world.modules)} modules{suffix}", 6000)
+
+    def _update_module_tree_item(self, path):
+        target = str(Path(path).resolve())
+        queue = [self.modules.topLevelItem(i) for i in range(self.modules.topLevelItemCount())]
+        while queue:
+            item = queue.pop(0)
+            if item.data(0, Qt.ItemDataRole.UserRole) == target:
+                entry = self.module_entries.get(target)
+                cached = self.index_cache.get(Path(target))
+                if entry and cached:
+                    item.setText(0, entry.relative_path.name + ("  [parse error]" if cached.error else ""))
+                    if cached.error:
+                        item.setForeground(0, QColor("#e06c75"))
+                        item.setToolTip(0, entry.dotted_name + "\n" + cached.error)
+                    else:
+                        item.setForeground(0, QColor("#e6e6e6"))
+                        count = sum(len(scope.members) for scope in cached.scopes or ())
+                        item.setToolTip(0, f"{entry.dotted_name}\n{len(cached.scopes or ())} scope(s), {count} browser item(s)")
+                return
+            queue.extend(item.child(i) for i in range(item.childCount()))
 
     def _recent_worlds(self):
         return [value for value in self.settings.value("recentWorlds", [], list) if Path(value).exists()]
@@ -518,4 +600,8 @@ class MainWindow(QMainWindow):
             self.members.setCurrentRow(0)
 
     def closeEvent(self, event):
-        event.accept() if self._confirm_discard() else event.ignore()
+        if self._confirm_discard():
+            self.index_cancelled.set()
+            event.accept()
+        else:
+            event.ignore()
