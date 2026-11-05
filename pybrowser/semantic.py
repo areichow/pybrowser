@@ -109,6 +109,50 @@ class SemanticVisitor(ast.NodeVisitor):
                 if name not in known:
                     self.diagnostics.append(NativeDiagnostic(self.path, "information", f"Name {name!r} may be undefined in local scope {self.scope_name}", item.lineno, item.col_offset + 1, item.lineno, item.col_offset + 1 + len(name), "possibly-undefined-local"))
 
+    def visit_Lambda(self, node):
+        """Analyze a lambda in its own lexical scope.
+
+        Lambda parameters are definitions inside the lambda, not unresolved
+        reads in the enclosing function. Defaults and annotations are evaluated
+        in the enclosing scope, while the body belongs to the lambda scope.
+        """
+        for default in node.args.defaults:
+            self.visit(default)
+        for default in node.args.kw_defaults:
+            if default is not None:
+                self.visit(default)
+        self.scope.append("<lambda>")
+        self.definitions.append(defaultdict(list))
+        self.local_defs.append(set())
+        self.local_loads.append([])
+        args = list(node.args.posonlyargs) + list(node.args.args) + list(node.args.kwonlyargs)
+        if node.args.vararg:
+            args.append(node.args.vararg)
+        if node.args.kwarg:
+            args.append(node.args.kwarg)
+        for arg in args:
+            self.symbol(arg.arg, "parameter", arg)
+            if arg.annotation:
+                self._reference_expression(arg.annotation, "annotation")
+        self.visit(node.body)
+        self._finish_scope(node)
+        self.definitions.pop()
+        self.local_defs.pop()
+        self.local_loads.pop()
+        self.scope.pop()
+
+    def visit_ExceptHandler(self, node):
+        """Treat ``except ... as name`` as a local binding for the handler."""
+        if node.type is not None:
+            self.visit(node.type)
+        if node.name:
+            # ast stores the alias as text rather than an ast.Name node.
+            self.symbols.append(SemanticSymbol(node.name, "exception", self.path, self.scope_name, node.lineno, node.col_offset + 1))
+            self.local_defs[-1].add(node.name)
+            self.references.append(SemanticReference(node.name, "write", self.path, self.scope_name, node.lineno, node.col_offset + 1))
+        for statement in node.body:
+            self.visit(statement)
+
     def visit_Import(self, node):
         for alias in node.names:
             name = alias.asname or alias.name.split(".")[0]

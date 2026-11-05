@@ -39,3 +39,39 @@ def test_general_references_resolve_containing_members(tmp_path):
     results = references_in_world(world, {path.resolve(): semantic}, "VALUE")
     assert {item.reference_kind for item in results} >= {"write", "read"}
     assert any(item.label.startswith("use") for item in results)
+
+
+def test_lambda_parameter_is_defined_in_lambda_scope():
+    source = """def mapping_hint(value):
+    normalize = lambda path: path.strip()
+    return normalize(value)
+"""
+    result = analyze_source(Path("app.py"), source)
+    undefined = {item.message for item in result.diagnostics if item.rule == "possibly-undefined-local"}
+    assert not any("'path'" in message for message in undefined)
+    assert any(item.name == "path" and item.kind == "parameter" for item in result.symbols)
+
+
+def test_except_alias_is_defined_in_handler_scope():
+    source = """def worker():
+    try:
+        run()
+    except Exception as error:
+        print(error)
+"""
+    result = analyze_source(Path("app.py"), source)
+    undefined = {item.message for item in result.diagnostics if item.rule == "possibly-undefined-local"}
+    assert not any("'error'" in message for message in undefined)
+    assert any(item.name == "error" and item.kind == "exception" for item in result.symbols)
+    assert any(item.name == "error" and item.kind == "write" for item in result.references)
+
+
+def test_lambda_body_still_reports_truly_missing_name():
+    source = """def outer():
+    callback = lambda item: missing(item)
+    return callback
+"""
+    result = analyze_source(Path("app.py"), source)
+    undefined = {item.message for item in result.diagnostics if item.rule == "possibly-undefined-local"}
+    assert any("'missing'" in message for message in undefined)
+    assert not any("'item'" in message for message in undefined)

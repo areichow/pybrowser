@@ -255,3 +255,10 @@ The Recent Worlds failure was traced to native menu lifetime, not folder parsing
 Recent-world activation is now two-stage. The QAction stores the path and schedules `_finish_open_recent_world()` with `QTimer.singleShot(0, ...)`, allowing the native menu callback to return before the world changes. Updating the MRU list is also queued, and `_rebuild_recent_menu()` refuses to clear the menu while it is visible. QAction paths are stored with `setData()` rather than captured only by a callback default.
 
 The Windows process-indexing entry point is also protected with the standard `if __name__ == "__main__"` guard and `multiprocessing.freeze_support()`. This prevents `ProcessPoolExecutor` child startup from recursively launching another PyBrowser when invoked with `python -m pybrowser` or from a frozen Windows executable.
+
+
+## Revision 11.6 lexical binding fixes
+
+Native undefined-local analysis now recognizes Python bindings that are not represented as ordinary `ast.Name(Store)` nodes. Lambda expressions receive their own lexical scope, and positional-only, positional, keyword-only, variadic, and keyword parameters are registered before the lambda body is analyzed. Lambda defaults remain analyzed in the enclosing scope, matching Python evaluation rules.
+
+Exception aliases from `except Exception as error:` are registered as local exception symbols and write references before the handler body is analyzed. Uses such as `print(error)` are therefore no longer reported as possibly undefined. Truly unresolved names inside lambda bodies and exception handlers continue to produce `PYBROWSER:possibly-undefined-local` information messages.
