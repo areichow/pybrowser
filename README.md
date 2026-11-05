@@ -24,3 +24,7 @@ py -3.14 -m pip install -e .[dev]
 py -3.14 -m pybrowser
 py -3.14 -m pytest
 ```
+
+## Revision 6.1 navigation lock
+
+When an entity has unsaved edits, answering **No** to the abandon prompt now atomically restores the module, scope, category, and member selections under Qt signal blockers. The editor text is never reloaded, the unsaved indicator remains active, focus returns to the editor, and navigation is cancelled.

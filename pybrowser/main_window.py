@@ -317,6 +317,8 @@ class MainWindow(QMainWindow):
             self.abandon_changes()
             return True
         self._restore_current_browser_selection()
+        self.editor.setFocus()
+        self.statusBar().showMessage("Navigation cancelled; unsaved changes remain in the current entity", 4000)
         return False
 
     def abandon_changes(self):
@@ -351,25 +353,66 @@ class MainWindow(QMainWindow):
         item.setToolTip(("Unsaved changes\n" + base) if modified else base)
 
     def _restore_current_browser_selection(self):
+        """Atomically restore all four browser panes without reloading editor text.
+
+        Selection-change signals fire after Qt has already moved the visual selection.
+        Rebuild the dependent panes under signal blockers so answering No can never
+        leave the browser on a different scope, category, or entity.
+        """
         if not self.doc or not self.member:
             return
-        scope_index = next((i for i, scope in enumerate(self.doc.scopes) if scope.name == self.member.scope), -1)
-        if scope_index >= 0:
+        target = self.member
+        self.loading = True
+        try:
+            # Restore the module tree selection.
+            target_path = str(self.doc.path.resolve())
+            queue = [self.modules.topLevelItem(i) for i in range(self.modules.topLevelItemCount())]
+            while queue:
+                item = queue.pop(0)
+                if item.data(0, Qt.ItemDataRole.UserRole) == target_path:
+                    blocker = QSignalBlocker(self.modules)
+                    self.modules.setCurrentItem(item)
+                    del blocker
+                    break
+                queue.extend(item.child(i) for i in range(item.childCount()))
+
+            # Restore scope and rebuild its categories from the document model.
+            scope_index = next((i for i, scope in enumerate(self.doc.scopes) if scope.name == target.scope), -1)
+            if scope_index < 0:
+                return
+            self.scope = self.doc.scopes[scope_index]
             blocker = QSignalBlocker(self.scopes)
             self.scopes.setCurrentRow(scope_index)
             del blocker
-            self.scope = self.doc.scopes[scope_index]
-        category_items = self.categories.findItems(self.member.category, Qt.MatchFlag.MatchExactly)
-        if category_items:
+
+            categories = sorted(
+                dict.fromkeys(item.category for item in self.scope.members),
+                key=lambda value: (value == "Uncategorized", value.casefold()),
+            )
             blocker = QSignalBlocker(self.categories)
-            self.categories.setCurrentItem(category_items[0])
+            self.categories.clear()
+            self.categories.addItems(categories)
+            category_index = categories.index(target.category) if target.category in categories else -1
+            self.categories.setCurrentRow(category_index)
             del blocker
-        visible = self._visible()
-        member_index = next((i for i, member in enumerate(visible) if member == self.member), -1)
-        if member_index >= 0:
+
+            # Rebuild members for the restored category and select the exact entity.
+            visible = [item for item in self.scope.members if item.category == target.category]
             blocker = QSignalBlocker(self.members)
+            self.members.clear()
+            member_index = -1
+            for index, member in enumerate(visible):
+                self.members.addItem(member.label)
+                list_item = self.members.item(self.members.count() - 1)
+                list_item.setToolTip(member.tooltip or member.label)
+                if member == target:
+                    member_index = index
             self.members.setCurrentRow(member_index)
             del blocker
+            self.member = target
+            self._update_modified_indicator(True)
+        finally:
+            self.loading = False
 
     def choose(self):
         name, _ = QFileDialog.getOpenFileName(self, "Open Python File", "", "Python files (*.py)")
@@ -471,8 +514,6 @@ class MainWindow(QMainWindow):
         if not key:
             return
         if self.editor.document().isModified() and not self._confirm_discard():
-            if previous:
-                self.modules.setCurrentItem(previous)
             return
         self._open_module(Path(key))
 
