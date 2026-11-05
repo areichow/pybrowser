@@ -28,3 +28,9 @@ def test_duplicate_members_use_light_red_marker():
     source = Path("pybrowser/widgets/member_delegate.py").read_text()
     assert "#dca8ac" in source
     assert "duplicate-definition" in source
+
+
+def test_unsaved_yellow_precedes_duplicate_warning_color():
+    source = Path("pybrowser/widgets/member_delegate.py").read_text()
+    assert 'unsaved = ' in source
+    assert source.index("elif unsaved:") < source.index("elif duplicate:")

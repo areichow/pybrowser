@@ -15,13 +15,17 @@ class MemberDelegate(QStyledItemDelegate):
         text = index.data(Qt.ItemDataRole.DisplayRole) or ""
         rect = option.rect.adjusted(5, 0, -4, 0)
         duplicate = index.data(Qt.ItemDataRole.UserRole + 1) == "duplicate-definition"
+        foreground = index.data(Qt.ItemDataRole.ForegroundRole)
+        foreground_color = foreground.color() if foreground else None
+        unsaved = foreground_color is not None and foreground_color.name().casefold() == "#ffd166"
         if option.state & QStyle.StateFlag.State_Selected:
             base_color = option.palette.highlightedText().color()
+        elif unsaved:
+            base_color = foreground_color
         elif duplicate:
             base_color = QColor("#dca8ac")
         else:
-            foreground = index.data(Qt.ItemDataRole.ForegroundRole)
-            base_color = foreground.color() if foreground else option.palette.text().color()
+            base_color = foreground_color or option.palette.text().color()
         painter.setFont(option.font)
         marker = text.find("  (")
         if marker < 0:
@@ -35,6 +39,8 @@ class MemberDelegate(QStyledItemDelegate):
             x = rect.left() + QFontMetrics(option.font).horizontalAdvance(name)
             if option.state & QStyle.StateFlag.State_Selected:
                 parameter_color = QColor("#fff1c9")
+            elif unsaved:
+                parameter_color = foreground_color
             elif duplicate:
                 parameter_color = QColor("#dca8ac")
             else:

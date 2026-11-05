@@ -227,3 +227,10 @@ A full LSP client is deferred. The current design combines native AST/symbol-tab
 - Renaming a Member preserves its source-order selection even though its label changes.
 - Duplicating a Member keeps the original class and category selected and selects the newly inserted duplicate.
 - Duplicate methods and functions in one scope are painted light red (`#dca8ac`) in the Members pane and include a duplicate-definition tooltip. Native semantic diagnostics continue to report the same condition.
+
+
+## Revision 11.2 diagnostic visibility
+
+Native diagnostic concerns are aggregated across the structural Browser. The highest severity controls the glyph and normal text color: `✕` error (`#f07178`), `▲` warning (`#dca8ac`), and `●` information (`#82aaff`). Multiple concerns append a count, such as `▲3`. Modules, Scopes, Categories, and Members carry these markers and detailed tooltips. The selected Member's breadcrumb includes its diagnostic marker and summary tooltip. The Source Model strip reports world totals for errors, warnings, and hints after indexing.
+
+Unsaved Member state retains precedence: a changed Member remains bold bright yellow (`#ffd166`) while its diagnostic glyph stays in the displayed label and all concerns remain in the tooltip. Saving or abandoning restores the diagnostic severity color. Parse-error modules continue to use the error marker even when semantic indexing cannot complete.

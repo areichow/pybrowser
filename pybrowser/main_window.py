@@ -38,6 +38,7 @@ from .conventions import category_sort_key, display_scope, is_special_category
 from .windowing import install_window_commands
 from .semantic import analyze_source
 from .semantic_queries import references_in_world
+from .diagnostic_aggregation import DiagnosticAggregation, decorate
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
 from PySide6.QtWidgets import QTextEdit
@@ -98,6 +99,32 @@ class MainWindow(QMainWindow):
         self._apply_editor_preferences()
         if path:
             self.open(path)
+
+    def _diagnostics(self):
+        return DiagnosticAggregation(self.semantic_modules)
+
+    @staticmethod
+    def _apply_summary(item, label, summary, base_tooltip="", tree=False):
+        detail = summary.tooltip(label) if summary.count else ""
+        tooltip = (base_tooltip + "\n\n" if base_tooltip and detail else base_tooltip) + detail
+        if tree:
+            item.setText(0, decorate(label, summary))
+            item.setData(0, Qt.ItemDataRole.UserRole + 2, label)
+            if summary.count:
+                item.setForeground(0, QColor(summary.color))
+            if tooltip:
+                item.setToolTip(0, tooltip)
+        else:
+            item.setText(decorate(label, summary))
+            item.setData(Qt.ItemDataRole.UserRole + 2, label)
+            if summary.count:
+                item.setForeground(QColor(summary.color))
+            if tooltip:
+                item.setToolTip(tooltip)
+
+    def _raw_category(self):
+        item = self.categories.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole + 2) if item else ""
 
     def focusInEvent(self, event):
         self.workspace.active_browser = self
@@ -514,9 +541,11 @@ class MainWindow(QMainWindow):
                     self.scopes.setCurrentRow(index)
                     self.scope = scope
                     break
-            found = self.categories.findItems(target.category, Qt.MatchFlag.MatchExactly)
-            if found:
-                self.categories.setCurrentItem(found[0])
+            for category_index in range(self.categories.count()):
+                item = self.categories.item(category_index)
+                if item.data(Qt.ItemDataRole.UserRole + 2) == target.category:
+                    self.categories.setCurrentRow(category_index)
+                    break
             visible = self._visible()
             for index, member in enumerate(visible):
                 if member == target:
@@ -604,12 +633,21 @@ class MainWindow(QMainWindow):
         item = self.members.currentItem()
         if item is None:
             return
-        item.setForeground(QColor("#ffd166") if modified else QColor("#e6e6e6"))
+        summary = self._diagnostics().member(self.doc.path, self.member) if self.doc and self.member else None
+        if modified:
+            item.setForeground(QColor("#ffd166"))
+        elif summary and summary.count:
+            item.setForeground(QColor(summary.color))
+        else:
+            item.setForeground(QColor("#e6e6e6"))
         font = item.font()
         font.setBold(modified)
         item.setFont(font)
-        base = self.member.tooltip or self.member.label if self.member else item.text()
-        item.setToolTip(("Unsaved changes\n" + base) if modified else base)
+        base = self.member.tooltip or self.member.label if self.member else item.data(Qt.ItemDataRole.UserRole + 2) or item.text()
+        if summary and summary.count:
+            base += "\n\n" + summary.tooltip(self.member.label)
+        item.setToolTip(("Unsaved changes\n\n" + base) if modified else base)
+
 
     def _restore_current_browser_selection(self):
         """Atomically restore all four browser panes without reloading editor text.
@@ -650,24 +688,22 @@ class MainWindow(QMainWindow):
             )
             blocker = QSignalBlocker(self.categories)
             self.categories.clear()
-            self.categories.addItems(categories)
+            
+            for category_name in categories:
+                self.categories.addItem(category_name)
+                list_item = self.categories.item(self.categories.count() - 1)
+                summary = self._diagnostics().category(self.doc.path, self.scope, category_name)
+                self._apply_summary(list_item, category_name, summary)
             category_index = categories.index(target.category) if target.category in categories else -1
             self.categories.setCurrentRow(category_index)
             del blocker
 
-            # Rebuild members for the restored category and select the exact Member.
+            # Rebuild Members with diagnostics, then select the exact Member.
+            self._populate_members(target.category)
             visible = [item for item in self.scope.members if item.category == target.category]
-            blocker = QSignalBlocker(self.members)
-            self.members.clear()
-            member_index = -1
-            for index, member in enumerate(visible):
-                self.members.addItem(member.label)
-                list_item = self.members.item(self.members.count() - 1)
-                list_item.setToolTip(member.tooltip or member.label)
-                if member == target:
-                    member_index = index
-            self.members.setCurrentRow(member_index)
-            del blocker
+            member_index = next((index for index, member in enumerate(visible) if member == target), -1)
+            with QSignalBlocker(self.members):
+                self.members.setCurrentRow(member_index)
             self.member = target
             self._update_modified_indicator(True)
         finally:
@@ -731,7 +767,13 @@ class MainWindow(QMainWindow):
             self.setWindowModified(False)
             with QSignalBlocker(self.scopes), QSignalBlocker(self.categories), QSignalBlocker(self.members):
                 self.scopes.clear()
-                self.scopes.addItems([display_scope(item.name) for item in self.doc.scopes])
+                
+                for scope_item in self.doc.scopes:
+                    label = display_scope(scope_item.name)
+                    self.scopes.addItem(label)
+                    list_item = self.scopes.item(self.scopes.count() - 1)
+                    summary = self._diagnostics().scope(self.doc.path, scope_item.name, self.doc.scopes)
+                    self._apply_summary(list_item, label, summary)
                 self.scope = None
                 self.member = None
                 self.categories.clear()
@@ -778,6 +820,8 @@ class MainWindow(QMainWindow):
                 leaf.setToolTip(0, f"{entry.dotted_name}\n{len(cached.scopes or ())} scope(s), {symbol_count} browser item(s)")
             else:
                 leaf.setToolTip(0, entry.dotted_name + "\nPending background index")
+            summary = self._diagnostics().module(entry.path)
+            self._apply_summary(leaf, parts[-1] + ("  [parse error]" if cached and cached.error else ""), summary, leaf.toolTip(0), tree=True)
             parent.addChild(leaf)
             self.module_entries[key] = entry
         self.modules.expandAll()
@@ -880,8 +924,11 @@ class MainWindow(QMainWindow):
         suffix = f", {errors} parse error(s)" if errors else ""
         native = tuple(diagnostic for module in self.semantic_modules.values() for diagnostic in module.diagnostics)
         self.diagnostics.set_native_diagnostics(native)
-        self.busy_indicator.end(f"Source model ready: {len(self.world.modules)} modules{suffix}, {len(native)} native diagnostic(s)")
-        self.statusBar().showMessage(f"Indexed {len(self.world.modules)} modules{suffix}; {len(native)} native diagnostic(s)", 6000)
+        summary = self._diagnostics().world()
+        concerns = f"{summary.errors} error(s) | {summary.warnings} warning(s) | {summary.information} hint(s)" if summary.count else "no concerns"
+        self.busy_indicator.end(f"Source model ready: {len(self.world.modules)} modules{suffix} | {concerns}")
+        self.busy_indicator.label.setToolTip(summary.tooltip("World diagnostics"))
+        self.statusBar().showMessage(f"Indexed {len(self.world.modules)} modules{suffix}; {concerns}", 6000)
 
     def _update_module_tree_item(self, path):
         target = str(Path(path).resolve())
@@ -892,16 +939,18 @@ class MainWindow(QMainWindow):
                 entry = self.module_entries.get(target)
                 cached = self.index_cache.get(Path(target))
                 if entry and cached:
-                    item.setText(0, entry.relative_path.name + ("  [parse error]" if cached.error else ""))
+                    label = entry.relative_path.name + ("  [parse error]" if cached.error else "")
                     if cached.error:
-                        item.setForeground(0, QColor("#e06c75"))
+                        item.setText(0, "✕ " + label)
+                        item.setForeground(0, QColor("#f07178"))
                         item.setToolTip(0, entry.dotted_name + "\n" + cached.error)
                     else:
-                        item.setForeground(0, QColor("#e6e6e6"))
                         count = sum(len(scope.members) for scope in cached.scopes or ())
-                        item.setToolTip(0, f"{entry.dotted_name}\n{len(cached.scopes or ())} scope(s), {count} browser item(s)")
+                        base = f"{entry.dotted_name}\n{len(cached.scopes or ())} scope(s), {count} browser item(s)"
+                        self._apply_summary(item, label, self._diagnostics().module(Path(target)), base, tree=True)
                 return
             queue.extend(item.child(i) for i in range(item.childCount()))
+
 
     def _recent_worlds(self):
         return [value for value in self.settings.value("recentWorlds", [], list) if Path(value).exists()]
@@ -930,11 +979,17 @@ class MainWindow(QMainWindow):
         self.scope = self.doc.scopes[row]
         with QSignalBlocker(self.categories):
             self.categories.clear()
-            self.categories.addItems(sorted(dict.fromkeys(item.category for item in self.scope.members), key=category_sort_key))
+            
+            for category_name in sorted(dict.fromkeys(item.category for item in self.scope.members), key=category_sort_key):
+                self.categories.addItem(category_name)
+                list_item = self.categories.item(self.categories.count() - 1)
+                summary = self._diagnostics().category(self.doc.path, self.scope, category_name)
+                self._apply_summary(list_item, category_name, summary)
         if self.categories.count():
             self.categories.setCurrentRow(0)
 
     def _category(self, category):
+        category = self._raw_category() or category
         if self.member and not self.loading and self.editor.document().isModified() and not self._confirm_discard():
             return
         self._populate_members(category)
@@ -950,7 +1005,8 @@ class MainWindow(QMainWindow):
             for member in visible:
                 self.members.addItem(member.label)
                 item = self.members.item(self.members.count() - 1)
-                item.setToolTip(member.tooltip or member.label)
+                summary = self._diagnostics().member(self.doc.path, member)
+                self._apply_summary(item, member.label, summary, member.tooltip or member.label)
                 if not member.synthetic and member.kind.value in {"function", "method"} and callable_name_from_label(member.label) in duplicate_names:
                     item.setData(Qt.ItemDataRole.UserRole + 1, "duplicate-definition")
                     item.setForeground(QColor("#dca8ac"))
@@ -958,7 +1014,7 @@ class MainWindow(QMainWindow):
 
 
     def _visible(self):
-        category = self.categories.currentItem().text() if self.categories.currentItem() else ""
+        category = self._raw_category()
         return [item for item in self.scope.members if item.category == category] if self.scope else []
 
     def _member(self, row):
@@ -975,7 +1031,10 @@ class MainWindow(QMainWindow):
         if member:
             self.editor.setPlainText(self.doc.source(member))
             self.editor.document().setModified(False)
-            self.crumb.setText(f"{self.doc.path.name} > {display_scope(member.scope)} > {member.category} > {member.label}")
+            summary = self._diagnostics().member(self.doc.path, member)
+            suffix = f"  {summary.glyph}" if summary.count else ""
+            self.crumb.setText(f"{self.doc.path.name} > {display_scope(member.scope)} > {member.category} > {member.label}{suffix}")
+            self.crumb.setToolTip(summary.tooltip(member.label) if summary.count else member.tooltip or member.label)
         else:
             self.editor.clear()
         self.loading = previous_loading
@@ -1212,7 +1271,7 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         self.categories.setCurrentItem(item)
-        category = item.text()
+        category = item.data(Qt.ItemDataRole.UserRole + 2) or item.text()
         menu = QMenu(self)
         line = min((m.span.first for m in self._visible()), default=1)
         menu.addAction("View in file...", lambda: self._view_in_file(line))
@@ -1359,7 +1418,12 @@ class MainWindow(QMainWindow):
         categories = sorted(dict.fromkeys(item.category for item in self.scope.members), key=category_sort_key)
         with QSignalBlocker(self.categories):
             self.categories.clear()
-            self.categories.addItems(categories)
+            
+            for category_name in categories:
+                self.categories.addItem(category_name)
+                list_item = self.categories.item(self.categories.count() - 1)
+                summary = self._diagnostics().category(self.doc.path, self.scope, category_name)
+                self._apply_summary(list_item, category_name, summary)
             category_index = categories.index(category) if category in categories else (0 if categories else -1)
             self.categories.setCurrentRow(category_index)
         selected_category = categories[category_index] if category_index >= 0 else ""
@@ -1409,7 +1473,7 @@ class MainWindow(QMainWindow):
         name, ok = QInputDialog.getText(self, "New Method", "Method name:")
         if not ok:
             return
-        default = self.categories.currentItem().text() if self.categories.currentItem() else "Uncategorized"
+        default = self._raw_category() or "as yet unclassified"
         category, ok = QInputDialog.getText(self, "New Method", "Category:", text=default)
         if not ok:
             return
@@ -1422,7 +1486,7 @@ class MainWindow(QMainWindow):
     def rename_current_category(self):
         if not self.doc or not self.categories.currentItem():
             return
-        old = self.categories.currentItem().text()
+        old = self._raw_category()
         new, ok = QInputDialog.getText(self, "Rename Category", "New category name:", text=old)
         if ok:
             try: self._apply_structural_edit(rename_category(self.doc, old, new, self.scope.name), f"Renamed {old} to {new}")

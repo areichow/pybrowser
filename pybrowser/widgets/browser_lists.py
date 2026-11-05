@@ -40,5 +40,5 @@ class CategoryListWidget(QListWidget):
             return
         try: row = int(bytes(event.mimeData().data(MIME)).decode("ascii"))
         except ValueError: return
-        self.member_dropped.emit(row, item.text())
+        self.member_dropped.emit(row, item.data(Qt.ItemDataRole.UserRole + 2) or item.text())
         event.acceptProposedAction()
