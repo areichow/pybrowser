@@ -1,12 +1,13 @@
 from pathlib import Path
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QFileSystemWatcher, QSettings, Qt
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QMainWindow, QMessageBox, QSplitter, QStatusBar,
+    QMainWindow, QMenu, QMessageBox, QSplitter, QStatusBar, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 from .parser import ParseError, read_document, replacement, validate
+from .project import ModuleEntry, World, open_world
 from .saving import atomic_write, changed
 from .search import SearchMatch, find_all
 from .widgets.editor import Editor
@@ -19,6 +20,12 @@ class MainWindow(QMainWindow):
     def __init__(self, path=None):
         super().__init__()
         self.doc = None
+        self.world: World | None = None
+        self.module_entries: dict[str, ModuleEntry] = {}
+        self.settings = QSettings("PyBrowser", "PyBrowser")
+        self.watcher = QFileSystemWatcher(self)
+        self.watcher.directoryChanged.connect(self._world_changed)
+        self.watcher.fileChanged.connect(self._file_changed)
         self.scope = None
         self.member = None
         self.loading = False
@@ -33,7 +40,8 @@ class MainWindow(QMainWindow):
             self.open(path)
 
     def _ui(self):
-        self.modules = QListWidget()
+        self.modules = QTreeWidget()
+        self.modules.setHeaderHidden(True)
         self.scopes = QListWidget()
         self.categories = QListWidget()
         self.members = QListWidget()
@@ -47,7 +55,7 @@ class MainWindow(QMainWindow):
             layout.addWidget(label)
             layout.addWidget(widget)
             top.addWidget(box)
-        self.modules.currentRowChanged.connect(self._module)
+        self.modules.currentItemChanged.connect(self._module)
         self.scopes.currentRowChanged.connect(self._scope)
         self.categories.currentTextChanged.connect(self._category)
         self.members.currentRowChanged.connect(self._member)
@@ -94,6 +102,9 @@ class MainWindow(QMainWindow):
         open_action = QAction("Open Python File...", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self.choose)
+        folder_action = QAction("Open Folder...", self)
+        folder_action.setShortcut("Ctrl+Shift+O")
+        folder_action.triggered.connect(self.choose_folder)
         save_action = QAction("Save Member", self)
         save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self.save)
@@ -104,7 +115,9 @@ class MainWindow(QMainWindow):
         next_action.setShortcut("Ctrl+G")
         next_action.triggered.connect(self.find_next)
         file_menu = self.menuBar().addMenu("&File")
-        file_menu.addActions([open_action, save_action])
+        file_menu.addActions([open_action, folder_action, save_action])
+        self.recent_menu = file_menu.addMenu("Recent Worlds")
+        self._rebuild_recent_menu()
         edit_menu = self.menuBar().addMenu("&Edit")
         edit_menu.addActions([find_action, next_action])
         self.addActions([open_action, save_action, find_action, next_action])
@@ -258,32 +271,160 @@ class MainWindow(QMainWindow):
     def choose(self):
         name, _ = QFileDialog.getOpenFileName(self, "Open Python File", "", "Python files (*.py)")
         if name and self._confirm_discard():
-            self.open(Path(name))
+            self.open_world_path(Path(name))
+
+    def choose_folder(self):
+        name = QFileDialog.getExistingDirectory(self, "Open Python Project Folder")
+        if name and self._confirm_discard():
+            self.open_world_path(Path(name))
 
     def open(self, path, restore=None):
+        path = Path(path)
+        if path.is_dir() or self.world is None or path not in [item.path for item in self.world.modules]:
+            self.open_world_path(path, restore)
+        else:
+            self._open_module(path, restore)
+
+    def open_world_path(self, path, restore=None):
         try:
-            self.doc = read_document(path)
+            world = open_world(Path(path))
         except Exception as exc:
-            QMessageBox.critical(self, "Cannot open file", str(exc))
+            QMessageBox.critical(self, "Cannot open world", str(exc))
+            return
+        self.world = world
+        self.doc = None
+        self.scope = None
+        self.member = None
+        self._populate_module_tree()
+        self._watch_world()
+        self._remember_world(world.root if not world.single_file else world.modules[0].path)
+        title = world.modules[0].path.name if world.single_file else world.root.name
+        self.setWindowTitle(title + "[*] - PyBrowser")
+        self.statusBar().showMessage(f"Opened {len(world.modules)} Python module(s)", 5000)
+        if restore and isinstance(restore, tuple) and len(restore) == 4:
+            module_path, scope, category, label = restore
+            self._select_module_path(Path(module_path), (scope, category, label))
+        elif world.modules:
+            self._select_module_path(world.modules[0].path)
+
+    def _open_module(self, path, restore=None):
+        try:
+            self.doc = read_document(Path(path))
+        except Exception as exc:
+            QMessageBox.critical(self, "Cannot open module", str(exc))
             return
         self.loading = True
-        self.modules.clear()
-        self.modules.addItem(self.doc.path.name)
-        self.modules.setCurrentRow(0)
+        self.scopes.clear()
+        self.scopes.addItems([item.name for item in self.doc.scopes])
         self.loading = False
-        self.setWindowTitle(self.doc.path.name + "[*] - PyBrowser")
+        if self.scopes.count():
+            self.scopes.setCurrentRow(0)
         self._search_text_changed()
+        self._watch_current_file()
         if restore:
             self._restore(*restore)
 
-    def _module(self, row):
-        if row < 0 or not self.doc:
+    def _populate_module_tree(self):
+        self.loading = True
+        self.modules.clear()
+        self.module_entries.clear()
+        nodes = {}
+        for entry in self.world.modules:
+            parent = self.modules.invisibleRootItem()
+            accumulated = []
+            parts = entry.relative_path.parts
+            for part in parts[:-1]:
+                accumulated.append(part)
+                key = "/".join(accumulated)
+                if key not in nodes:
+                    node = QTreeWidgetItem([part])
+                    node.setData(0, Qt.ItemDataRole.UserRole, None)
+                    parent.addChild(node)
+                    nodes[key] = node
+                parent = nodes[key]
+            leaf = QTreeWidgetItem([parts[-1]])
+            key = str(entry.path)
+            leaf.setData(0, Qt.ItemDataRole.UserRole, key)
+            leaf.setToolTip(0, entry.dotted_name)
+            parent.addChild(leaf)
+            self.module_entries[key] = entry
+        self.modules.expandAll()
+        self.loading = False
+
+    def _module(self, current, previous=None):
+        if self.loading or current is None:
             return
-        self.scopes.blockSignals(True)
-        self.scopes.clear()
-        self.scopes.addItems([item.name for item in self.doc.scopes])
-        self.scopes.blockSignals(False)
-        self.scopes.setCurrentRow(0)
+        key = current.data(0, Qt.ItemDataRole.UserRole)
+        if not key:
+            return
+        if self.editor.document().isModified() and not self._confirm_discard():
+            if previous:
+                self.modules.setCurrentItem(previous)
+            return
+        self._open_module(Path(key))
+
+    def _select_module_path(self, path, restore=None):
+        target = str(Path(path).resolve())
+        iterator = [self.modules.topLevelItem(i) for i in range(self.modules.topLevelItemCount())]
+        while iterator:
+            item = iterator.pop(0)
+            if item.data(0, Qt.ItemDataRole.UserRole) == target:
+                self.modules.setCurrentItem(item)
+                if restore:
+                    self._open_module(Path(target), restore)
+                return
+            iterator[0:0] = [item.child(i) for i in range(item.childCount())]
+
+    def _watch_world(self):
+        existing = self.watcher.directories() + self.watcher.files()
+        if existing:
+            self.watcher.removePaths(existing)
+        if self.world and not self.world.single_file:
+            directories = {str(self.world.root)}
+            directories.update(str(item.path.parent) for item in self.world.modules)
+            self.watcher.addPaths(sorted(directories))
+        self._watch_current_file()
+
+    def _watch_current_file(self):
+        if self.doc and str(self.doc.path) not in self.watcher.files():
+            self.watcher.addPath(str(self.doc.path))
+
+    def _world_changed(self, _path):
+        if not self.world or self.world.single_file:
+            return
+        current = self.doc.path if self.doc else None
+        try:
+            self.world = open_world(self.world.root)
+            self._populate_module_tree()
+            if current and current.exists():
+                self._select_module_path(current)
+        except OSError as exc:
+            self.statusBar().showMessage(str(exc), 5000)
+
+    def _file_changed(self, path):
+        if self.doc and Path(path) == self.doc.path and not self.editor.document().isModified():
+            self.statusBar().showMessage("Current module changed outside PyBrowser; reloading", 5000)
+            location = (str(self.doc.path), self.member.scope, self.member.category, self.member.label) if self.member else None
+            self._open_module(self.doc.path, location)
+
+    def _recent_worlds(self):
+        return [value for value in self.settings.value("recentWorlds", [], list) if Path(value).exists()]
+
+    def _remember_world(self, path):
+        value = str(Path(path).resolve())
+        recent = [item for item in self._recent_worlds() if item != value]
+        self.settings.setValue("recentWorlds", [value, *recent][:10])
+        self._rebuild_recent_menu()
+
+    def _rebuild_recent_menu(self):
+        if not hasattr(self, "recent_menu"):
+            return
+        self.recent_menu.clear()
+        recent = self._recent_worlds()
+        self.recent_menu.setEnabled(bool(recent))
+        for value in recent:
+            action = self.recent_menu.addAction(value)
+            action.triggered.connect(lambda checked=False, p=value: self.open_world_path(Path(p)))
 
     def _scope(self, row):
         if row < 0 or not self.doc:
@@ -337,12 +478,12 @@ class MainWindow(QMainWindow):
             return
         if changed(self.doc) and QMessageBox.question(self, "File changed", "The file changed outside PyBrowser. Overwrite it?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
-        location = (self.member.scope, self.member.category, self.member.label)
+        location = (str(self.doc.path), self.member.scope, self.member.category, self.member.label)
         candidate = replacement(self.doc, self.member, self.editor.toPlainText())
         try:
             validate(candidate, str(self.doc.path))
             atomic_write(self.doc, candidate)
-            self.open(self.doc.path, location)
+            self._open_module(self.doc.path, location[1:])
             self.editor.document().setModified(False)
             self.setWindowModified(False)
             self.statusBar().showMessage("Saved", 5000)

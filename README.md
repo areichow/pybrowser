@@ -1,19 +1,19 @@
-# PyBrowser Revision 3
+# PyBrowser Revision 4
 
-Revision 3 completes the single-file browser model. Every direct module or class-body statement is represented, while nested classes receive their own qualified scopes.
+Revision 4 adds directory worlds and hierarchical Python package browsing while retaining single-file mode.
 
-## Highlights
+## Stage 4 features
 
-- Nested class scopes such as `Outer.Inner`
-- Module and class docstrings
-- Class variables, constants, ordinary variables, `__all__`, and type aliases
-- Decorator labels for properties, setters, static methods, class methods, and overloads
-- Descriptive labels for `if`, `for`, `while`, `with`, `try`, and `match` blocks
-- Synthetic categories: Documentation, Imports, Types, Constants, Variables, Class Variables, Module Metadata, Functions, Runnable, Executable Code, and Uncategorized
-- Explicit `# category:` comments override inferred categories
-- `<entire category>` editing for contiguous categories containing multiple members
-- Tooltips retain longer source descriptions when a browser label is shortened
-- All Revision 2 safety behavior and dark-theme styling
+- Open a project folder with **Ctrl+Shift+O**.
+- Display packages, directories, and `.py` modules as a hierarchical tree.
+- Derive dotted module names and show them in module tooltips.
+- Exclude `.git`, `.venv`, `venv`, `__pycache__`, build, dist, pytest, mypy, Ruff, tox, nox, and Node-generated trees.
+- Parse modules lazily when selected rather than blocking on every file in a repository.
+- Watch project directories for module creation and deletion.
+- Watch the current source file and reload clean editor sessions after external changes.
+- Retain SHA-256 conflict protection for unsaved edits.
+- Store up to ten recent files or worlds with `QSettings`.
+- Preserve all Revision 3.2 browsing, editing, dark theme, and Find behavior.
 
 ## Run
 
@@ -22,13 +22,3 @@ py -3.14 -m pip install -e .[dev]
 py -3.14 -m pybrowser
 py -3.14 -m pytest
 ```
-
-## Find bar
-
-The always-visible Find bar sits between the four browser columns and source editor. `Ctrl+F` focuses and selects the query field, Enter starts a search, and `Ctrl+G` advances to the next match with wraparound. The **Current method/entity only** checkbox switches between the displayed entity and the complete open file. The indicator reports `1/6 matches` style progress. File-wide search uses the in-memory edited entity when it has unsaved changes.
-
-## Revision 3.2 fixes
-
-- Uses `QTextEdit.ExtraSelection`, the correct PySide6 owner for editor extra selections.
-- Recalculates current-entity matches directly from the visible editor text after navigation or editing.
-- Keeps the match indicator scoped to the checked search mode.
