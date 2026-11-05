@@ -1,41 +1,81 @@
+from pathlib import Path
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QListWidget, QSplitter, QVBoxLayout
+from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtWidgets import QDialog, QLabel, QListWidget, QMessageBox, QSplitter, QVBoxLayout
 from .editor import Editor
+from ..parser import ParseError, read_document, replacement, validate
+from ..saving import atomic_write, changed
 
 
 class CodeQueryDialog(QDialog):
     navigate_requested = Signal(object)
 
-    def __init__(self, title, results, parent=None):
+    def __init__(self, title, results, workspace, parent=None):
         super().__init__(parent)
+        self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.workspace = workspace
         self.results_data = list(results)
-        self.setWindowTitle(f"{title} [{len(self.results_data)}]")
+        self.current_document = None
+        self.current_member = None
+        self.setWindowTitle(f"{title} [{len(self.results_data)}][*]")
         self.resize(900, 650)
         self.summary = QLabel(f"{len(self.results_data)} result(s)")
-        self.results = QListWidget()
-        self.results.addItems([item.display for item in self.results_data])
+        self.results = QListWidget(); self.results.addItems([item.display for item in self.results_data])
         self.preview = Editor()
-        self.preview.setReadOnly(True)
-        split = QSplitter()
-        split.setOrientation(Qt.Orientation.Vertical)
-        split.addWidget(self.results)
-        split.addWidget(self.preview)
-        split.setSizes([210, 440])
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.summary)
-        layout.addWidget(split)
-        layout.addWidget(buttons)
+        self.preview.browse_class_requested.connect(self.workspace.request_class_browser)
+        self.preview.modificationChanged.connect(self.setWindowModified)
+        split = QSplitter(Qt.Orientation.Vertical); split.addWidget(self.results); split.addWidget(self.preview); split.setSizes([210, 440])
+        layout = QVBoxLayout(self); layout.addWidget(self.summary); layout.addWidget(split)
         self.results.currentRowChanged.connect(self._preview)
         self.results.itemDoubleClicked.connect(lambda _item: self._navigate())
-        if self.results.count():
-            self.results.setCurrentRow(0)
+        self.workspace.file_changed.connect(self._workspace_changed)
+        save = QAction("Save", self); save.setShortcut(QKeySequence.StandardKey.Save); save.triggered.connect(self.save)
+        abandon = QAction("Abandon", self); abandon.setShortcut("Ctrl+L"); abandon.triggered.connect(self.abandon)
+        self.addActions([save, abandon])
+        if self.results.count(): self.results.setCurrentRow(0)
 
     def _preview(self, row):
-        self.preview.setPlainText(self.results_data[row].source if 0 <= row < len(self.results_data) else "")
+        if self.preview.document().isModified():
+            answer = QMessageBox.question(self, "Abandon changes?", "Do you want to abandon changes to this entity?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            if answer == QMessageBox.StandardButton.No: return
+        if not (0 <= row < len(self.results_data)): return
+        result = self.results_data[row]
+        try:
+            self.current_document = read_document(result.module)
+            scope = next((s for s in self.current_document.scopes if s.name == result.scope), None)
+            self.current_member = next((m for m in scope.members if not m.synthetic and m.label == result.label), None) if scope else None
+            source = self.current_document.source(self.current_member) if self.current_member else result.source
+            self.preview.setPlainText(source); self.preview.document().setModified(False)
+        except OSError as exc: QMessageBox.warning(self, "Cannot load source", str(exc))
+
+    def save(self):
+        if not self.current_document or not self.current_member: return
+        if changed(self.current_document):
+            QMessageBox.warning(self, "File changed", "The file changed in another window. Select the result again before saving."); return
+        candidate = replacement(self.current_document, self.current_member, self.preview.toPlainText())
+        try:
+            validate(candidate, str(self.current_document.path)); atomic_write(self.current_document, candidate)
+            self.current_document = read_document(self.current_document.path)
+            self.preview.document().setModified(False)
+            self.workspace.announce_file_changed(self.current_document.path, self)
+        except (OSError, ParseError) as exc: QMessageBox.critical(self, "Save failed", str(exc))
+
+    def abandon(self):
+        if not self.current_document or not self.current_member:
+            return
+        self.preview.setPlainText(self.current_document.source(self.current_member))
+        self.preview.document().setModified(False)
 
     def _navigate(self):
         row = self.results.currentRow()
-        if 0 <= row < len(self.results_data):
-            self.navigate_requested.emit(self.results_data[row])
+        if 0 <= row < len(self.results_data): self.navigate_requested.emit(self.results_data[row])
+
+    def _workspace_changed(self, path, origin):
+        if origin is self or not self.current_document or Path(path) != self.current_document.path: return
+        if not self.preview.document().isModified(): self._preview(self.results.currentRow())
+
+    def closeEvent(self, event):
+        if not self.preview.document().isModified(): event.accept(); return
+        answer = QMessageBox.question(self, "Abandon changes?", "Do you want to abandon changes in this query window?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        event.accept() if answer == QMessageBox.StandardButton.Yes else event.ignore()

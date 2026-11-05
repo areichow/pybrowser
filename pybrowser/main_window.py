@@ -14,6 +14,9 @@ from .navigation import Location, NavigationHistory, search_file, symbols_for_mo
 from .widgets.quick_dialog import QuickDialog
 from .widgets.member_delegate import MemberDelegate
 from .widgets.code_query_dialog import CodeQueryDialog
+from .widgets.file_view import FileViewWindow
+from .widgets.browser_lists import CategoryListWidget, MemberListWidget
+from .workspace import Workspace
 from .code_queries import callable_name_from_label, implementers, senders
 from .structural import (
     StructuralEditError, add_class, add_function, add_method, convert_method_kind,
@@ -36,10 +39,14 @@ from PySide6.QtWidgets import QTextEdit
 QPlainTextEditExtraSelection = QTextEdit.ExtraSelection
 
 class MainWindow(QMainWindow):
-    def __init__(self, path=None):
+    def __init__(self, path=None, workspace=None):
         super().__init__()
         self.doc = None
-        self.world: World | None = None
+        self.workspace = workspace or Workspace()
+        self.workspace.register(self)
+        self.workspace.file_changed.connect(self._workspace_file_changed)
+        self.world: World | None = self.workspace.world
+        self.child_windows = []
         self.module_entries: dict[str, ModuleEntry] = {}
         self.settings = QSettings("PyBrowser", "PyBrowser")
         self.thread_pool = QThreadPool.globalInstance()
@@ -78,14 +85,23 @@ class MainWindow(QMainWindow):
         if path:
             self.open(path)
 
+    def focusInEvent(self, event):
+        self.workspace.active_browser = self
+        super().focusInEvent(event)
+
     def _ui(self):
         self.modules = QTreeWidget()
         self.modules.setHeaderHidden(True)
+        self.modules.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.modules.customContextMenuRequested.connect(self._modules_context_menu)
         self.scopes = QListWidget()
-        self.categories = QListWidget()
+        self.scopes.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.scopes.customContextMenuRequested.connect(self._scopes_context_menu)
+        self.categories = CategoryListWidget()
         self.categories.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.categories.customContextMenuRequested.connect(self._categories_context_menu)
-        self.members = QListWidget()
+        self.categories.member_dropped.connect(self._member_dropped)
+        self.members = MemberListWidget()
         self.members.setItemDelegate(MemberDelegate(self.members))
         self.members.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.members.customContextMenuRequested.connect(self._members_context_menu)
@@ -109,7 +125,7 @@ class MainWindow(QMainWindow):
         self.find_text.setClearButtonEnabled(True)
         self.find_text.returnPressed.connect(self.execute_find)
         self.find_text.textChanged.connect(self._search_text_changed)
-        self.current_entity_only = QCheckBox("Current Member Only")
+        self.current_entity_only = QCheckBox("Current method/entity only")
         self.current_entity_only.setChecked(True)
         self.current_entity_only.toggled.connect(self._search_scope_changed)
         self.match_indicator = QLabel("0 matches")
@@ -127,6 +143,7 @@ class MainWindow(QMainWindow):
         self.editor.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.editor.customContextMenuRequested.connect(self._editor_context_menu)
         self.editor.textChanged.connect(self._modified)
+        self.editor.browse_class_requested.connect(self.open_browser_on_class)
 
         lower = QWidget()
         lower_layout = QVBoxLayout(lower)
@@ -177,6 +194,9 @@ class MainWindow(QMainWindow):
         toggle_diagnostics_action.toggled.connect(self.diagnostics.setVisible)
         typecheck_settings_action = QAction("Type Checker Settings...", self)
         typecheck_settings_action.triggered.connect(self.show_typecheck_settings)
+        new_browser_action = QAction("New Browser", self)
+        new_browser_action.setShortcut("Ctrl+Shift+B")
+        new_browser_action.triggered.connect(self.new_browser)
         abandon_action = QAction("Abandon Entity Changes", self)
         abandon_action.setShortcut("Ctrl+L")
         abandon_action.triggered.connect(self.abandon_changes)
@@ -211,6 +231,8 @@ class MainWindow(QMainWindow):
         edit_menu.addSeparator()
         edit_menu.addAction(preferences_action)
         tools_menu = self.menuBar().addMenu("&Tools")
+        tools_menu.addAction(new_browser_action)
+        tools_menu.addSeparator()
         tools_menu.addAction(typecheck_action)
         tools_menu.addAction(toggle_diagnostics_action)
         tools_menu.addSeparator()
@@ -236,7 +258,7 @@ class MainWindow(QMainWindow):
         init_action.triggered.connect(self.create_init_file)
         navigate_menu = self.menuBar().addMenu("&Navigate")
         navigate_menu.addActions([quick_module_action, quick_symbol_action, back_action, forward_action, goto_action])
-        self.addActions([open_action, save_action, find_action, next_action, replace_action, abandon_action, typecheck_action, quick_module_action, quick_symbol_action, project_find_action, back_action, forward_action, goto_action])
+        self.addActions([open_action, save_action, find_action, next_action, replace_action, abandon_action, new_browser_action, typecheck_action, quick_module_action, quick_symbol_action, project_find_action, back_action, forward_action, goto_action])
 
     def _typecheck_preferences(self):
         return {
@@ -647,6 +669,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Cannot open world", str(exc))
             return
         self.world = world
+        self.workspace.set_world(world)
         self.doc = None
         self.scope = None
         self.member = None
@@ -994,11 +1017,106 @@ class MainWindow(QMainWindow):
             return value
         return callable_name_from_label(self.member.label) if self.member else ""
 
+    def _view_in_file(self, line=1):
+        if not self.doc:
+            return
+        window = FileViewWindow(self.doc.path, self.workspace, line, self)
+        window.show()
+        self.child_windows.append(window)
+
+    def _modules_context_menu(self, position):
+        item = self.modules.itemAt(position)
+        if item is None:
+            return
+        key = item.data(0, Qt.ItemDataRole.UserRole)
+        if not key:
+            return
+        menu = QMenu(self)
+        menu.addAction("View in file...", lambda: self._open_file_view_path(Path(key), 1))
+        menu.exec(self.modules.viewport().mapToGlobal(position))
+
+    def _open_file_view_path(self, path, line=1):
+        window = FileViewWindow(path, self.workspace, line, self)
+        window.show()
+        self.child_windows.append(window)
+
+    def _scopes_context_menu(self, position):
+        item = self.scopes.itemAt(position)
+        if item is None:
+            return
+        self.scopes.setCurrentItem(item)
+        menu = QMenu(self)
+        line = 1
+        if self.scope and self.scope.members:
+            line = min(member.span.first for member in self.scope.members)
+        menu.addAction("View in file...", lambda: self._view_in_file(line))
+        menu.addSeparator()
+        menu.addAction("New Class...", self.new_class)
+        menu.exec(self.scopes.viewport().mapToGlobal(position))
+
+    def _member_dropped(self, row, category):
+        visible = self._visible()
+        if not (0 <= row < len(visible)):
+            return
+        member = visible[row]
+        if member.synthetic or member.category == category:
+            return
+        try:
+            self._apply_structural_edit(move_member(self.doc, member, category), f"Moved {member.label} to {category}")
+        except StructuralEditError as exc:
+            QMessageBox.warning(self, "Cannot move entity", str(exc))
+
+    def new_browser(self):
+        if not self.world:
+            return
+        window = MainWindow(workspace=self.workspace)
+        window.open_world_path(self.world.modules[0].path if self.world.single_file else self.world.root)
+        if self.doc and self.member:
+            window._select_module_path(self.doc.path, (self.member.scope, self.member.category, self.member.label))
+        window.show()
+        self.child_windows.append(window)
+
+    def open_browser_on_class(self, class_name):
+        if not self.world:
+            return
+        matches = []
+        for entry in self.world.modules:
+            cached = self.index_cache.get(entry.path)
+            scopes = cached.scopes if cached and cached.scopes else ()
+            for scope in scopes:
+                if scope.name.split(".")[-1] == class_name:
+                    matches.append((entry.path, scope.name))
+        if not matches:
+            self.statusBar().showMessage(f"Class {class_name} was not found in the indexed world", 5000)
+            return
+        path, scope = matches[0]
+        window = MainWindow(workspace=self.workspace)
+        window.open_world_path(self.world.modules[0].path if self.world.single_file else self.world.root)
+        window._select_module_path(path)
+        for index, item in enumerate(window.doc.scopes):
+            if item.name == scope:
+                window.scopes.setCurrentRow(index)
+                break
+        window.show()
+        self.child_windows.append(window)
+
+    def _workspace_file_changed(self, path, origin):
+        if origin is self or not self.doc or Path(path) != self.doc.path:
+            return
+        if self.editor.document().isModified():
+            self.statusBar().showMessage("File changed in another workspace window; save is blocked until you reload", 7000)
+            return
+        location = (self.member.scope, self.member.category, self.member.label) if self.member else None
+        self.index_cache.put(self.doc.path, None)
+        self._open_module(self.doc.path, location)
+
     def _members_context_menu(self, position):
         member = self.member
         if not member:
             return
         menu = QMenu(self)
+        menu.addAction("View in file...", lambda: self._view_in_file(member.span.first))
+        menu.addSeparator()
         if member.synthetic:
             rename = menu.addAction("Rename category...", self.rename_current_category)
             if is_special_category(member.category) or member.category == "as yet unclassified":
@@ -1026,12 +1144,16 @@ class MainWindow(QMainWindow):
         self.categories.setCurrentItem(item)
         category = item.text()
         menu = QMenu(self)
+        line = min((m.span.first for m in self._visible()), default=1)
+        menu.addAction("View in file...", lambda: self._view_in_file(line))
+        menu.addSeparator()
         rename = menu.addAction("Rename category...", self.rename_current_category)
         # Inferred special categories do not necessarily have source metadata to rename.
         if is_special_category(category) or category == "as yet unclassified":
             rename.setEnabled(False)
             rename.setToolTip("Built-in and inferred categories cannot be renamed")
-        menu.addAction("New method in category...", self.new_method)
+        menu.addAction("New method...", self.new_method)
+        menu.addAction("New function...", self.new_function)
         menu.exec(self.categories.viewport().mapToGlobal(position))
 
     def _editor_context_menu(self, position):
@@ -1068,9 +1190,10 @@ class MainWindow(QMainWindow):
         self._show_code_query_dialog(f"Senders of {name}", results)
 
     def _show_code_query_dialog(self, title, results):
-        dialog = CodeQueryDialog(title, results, self)
+        dialog = CodeQueryDialog(title, results, self.workspace, self)
         dialog.navigate_requested.connect(self._navigate_code_query_result)
-        dialog.exec()
+        dialog.show()
+        self.child_windows.append(dialog)
 
     def _navigate_code_query_result(self, result):
         if not self._confirm_discard():
@@ -1088,6 +1211,7 @@ class MainWindow(QMainWindow):
             if changed(self.doc):
                 raise StructuralEditError("The module changed on disk; reload it before structural editing")
             atomic_write(self.doc, edit.text)
+            self.workspace.announce_file_changed(self.doc.path, self)
             self.index_cache.put(self.doc.path, None)
             self._open_module(self.doc.path)
             self._select_structural_result(edit.scope, edit.category, edit.preferred_name)
@@ -1211,6 +1335,7 @@ class MainWindow(QMainWindow):
         try:
             validate(candidate, str(self.doc.path))
             atomic_write(self.doc, candidate)
+            self.workspace.announce_file_changed(self.doc.path, self)
             self._open_module(self.doc.path, location[1:])
             self.editor.document().setModified(False)
             self.setWindowModified(False)

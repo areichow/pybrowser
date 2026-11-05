@@ -41,3 +41,14 @@ py -3.14 -m pytest
 - Uncategorized class members appear under `as yet unclassified`.
 - The module scope displays as `-- module --` while retaining its internal structural identity.
 - Synthetic category block members display as `-- entire category --`.
+
+
+## Revision 10 shared workspace and contextual file editing
+
+- Modules, Scopes, Categories, and Members context menus include **View in file...**, opening an editable whole-file window positioned at the selected structure.
+- File View supports `Ctrl+S` and `Ctrl+L`, validates the complete module, writes atomically, and broadcasts changes to every window in the workspace.
+- Members can be dragged onto an existing category to move them without a category-name prompt.
+- **Tools > New Browser** (`Ctrl+Shift+B`) opens another browser on the same shared world.
+- `Ctrl+B` in a code editor opens another browser on the selected class name when the class is indexed.
+- Implementers and Senders windows are modeless, editable, and support `Ctrl+S` and `Ctrl+L`; saved changes refresh browser and file-view windows.
+- Scopes context menus include **New Class...**. Categories context menus include **New Method...** and **New Function...**.

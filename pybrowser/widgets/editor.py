@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import QRect, QSettings, QSize, Qt
+from PySide6.QtCore import QRect, QSettings, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor, QFont, QKeyEvent, QPainter, QSyntaxHighlighter, QTextCharFormat,
     QTextCursor, QTextFormat,
@@ -48,6 +48,7 @@ class LineNumberArea(QWidget):
 
 
 class Editor(QPlainTextEdit):
+    browse_class_requested = Signal(str)
     DEDENT_WORDS = {"return", "raise", "break", "continue", "pass"}
     PAIRS = {"(": ")", "[": "]", "{": "}"}
 
@@ -123,6 +124,15 @@ class Editor(QPlainTextEdit):
             top += height
 
     def keyPressEvent(self, event: QKeyEvent):
+        if event.key() == Qt.Key.Key_B and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            cursor = self.textCursor()
+            value = cursor.selectedText().strip()
+            if not value:
+                cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+                value = cursor.selectedText().strip()
+            if value and value.isidentifier():
+                self.browse_class_requested.emit(value)
+            return
         if event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
             if event.key() == Qt.Key.Key_Backtab or event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 self._indent_selection(False)
