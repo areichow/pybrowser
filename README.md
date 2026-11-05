@@ -22,3 +22,7 @@ py -3.14 -m pip install -e .[dev]
 py -3.14 -m pybrowser
 py -3.14 -m pytest
 ```
+
+## Find bar
+
+The always-visible Find bar sits between the four browser columns and source editor. `Ctrl+F` focuses and selects the query field, Enter starts a search, and `Ctrl+G` advances to the next match with wraparound. The **Current method/entity only** checkbox switches between the displayed entity and the complete open file. The indicator reports `1/6 matches` style progress. File-wide search uses the in-memory edited entity when it has unsaved changes.
