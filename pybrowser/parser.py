@@ -8,6 +8,7 @@ import libcst as cst
 from libcst.metadata import MetadataWrapper, PositionProvider
 from .model import Document, Kind, Member, Scope, Span
 from .saving import file_signature
+from .conventions import canonical_category, ENTIRE_CATEGORY_DISPLAY
 
 CATEGORY_RE = re.compile(r"^[ \t]*#[ \t]*category[ \t]*:[ \t]*(?P<name>[^\r\n#]+?)[ \t]*$", re.I)
 
@@ -36,7 +37,7 @@ def _directive_before(text: str, start_line: int, lower_bound: int) -> tuple[str
         value = lines[index - 1]
         match = CATEGORY_RE.match(value)
         if match:
-            return match.group("name").strip(), index
+            return canonical_category(match.group("name")), index
         stripped = value.strip()
         if stripped and not stripped.startswith(("#", "@")):
             break
@@ -68,22 +69,22 @@ def _assignment_target(node) -> str:
 
 def _inferred_category(node, in_class: bool) -> str:
     if _is_docstring(node):
-        return "Documentation"
+        return "-- docs --"
     if isinstance(node, cst.SimpleStatementLine):
         if node.body and all(isinstance(item, (cst.Import, cst.ImportFrom)) for item in node.body):
-            return "Imports"
+            return "-- imports --"
         if len(node.body) == 1 and isinstance(node.body[0], (cst.Assign, cst.AnnAssign, cst.AugAssign)):
             name = _assignment_target(node.body[0])
             if name == "__all__":
                 return "Module Metadata"
             if name.isupper():
-                return "Constants"
-            return "Class Variables" if in_class else "Variables"
+                return "-- constants --"
+            return "Class Variables" if in_class else "-- variables --"
     type_alias = getattr(cst, "TypeAlias", None)
     if type_alias and isinstance(node, type_alias):
         return "Types"
     if isinstance(node, cst.FunctionDef):
-        return "Uncategorized" if in_class else "Functions"
+        return "as yet unclassified" if in_class else "-- functions --"
     if _is_main_guard(node):
         return "Runnable"
     return "Executable Code"
@@ -188,7 +189,7 @@ def _add_category_members(items: list[Member]) -> tuple[Member, ...]:
         first, last = run[0], run[-1]
         if len(run) > 1:
             span = Span(first.span.start, last.span.end, first.span.first, last.span.last)
-            result.append(Member(first.scope, first.category, "<entire category>", Kind.CATEGORY, span, True, f"Edit {len(run)} contiguous members together"))
+            result.append(Member(first.scope, first.category, ENTIRE_CATEGORY_DISPLAY, Kind.CATEGORY, span, True, f"Edit {len(run)} contiguous members together"))
         result.extend(run)
         run.clear()
     for item in items:

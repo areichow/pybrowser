@@ -80,7 +80,7 @@ def _line_offset(text: str, line: int) -> int:
     return starts[min(max(0, line - 1), len(starts) - 1)]
 
 
-def add_function(document: Document, name: str, category: str = "Functions") -> StructuralEdit:
+def add_function(document: Document, name: str, category: str = "-- functions --") -> StructuralEdit:
     name = validate_identifier(name)
     nl = _newline(document)
     block = f"# category: {category}{nl}def {name}():{nl}    pass"

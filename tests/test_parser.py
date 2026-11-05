@@ -29,7 +29,7 @@ def test_categories_decorators_async_and_multiline():
     assert scopes[1].members[0].category=="initialization";assert scopes[1].members[1].label.startswith("async run")
 def test_category_does_not_leak():
     scopes=build_index(Path("x.py"),"# category: One\ndef one(): pass\n\ndef two(): pass\n")
-    assert [m.category for m in scopes[0].members]==["One","Functions"]
+    assert [m.category for m in scopes[0].members]==["One","-- functions --"]
 def test_replacement_preserves_unrelated_bytes():
     scopes=build_index(Path("x.py"),SOURCE);m=scopes[0].members[-1];doc=Document(Path("x.py"),SOURCE,"utf-8","\n",True,(0,0,""),scopes);candidate=replacement(doc,m,"# category: Functions\ndef main():\n    return 42\n");assert candidate.startswith(SOURCE[:m.span.start]);assert "return 42" in candidate;validate(candidate,"x.py")
 def test_invalid_source_reports_location():

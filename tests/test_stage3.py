@@ -53,7 +53,7 @@ def test_complete_module_classification():
     scopes = build_index(Path("example.py"), SOURCE)
     module = scopes[0]
     categories = {m.category for m in real(module)}
-    assert {"Documentation", "Imports", "Constants", "Variables", "Module Metadata", "Executable Code"} <= categories
+    assert {"-- docs --", "-- imports --", "-- constants --", "-- variables --", "Module Metadata", "Executable Code"} <= categories
     kinds = {m.kind for m in real(module)}
     assert {Kind.IF, Kind.FOR, Kind.WHILE, Kind.WITH, Kind.TRY, Kind.MATCH} <= kinds
 
@@ -70,7 +70,7 @@ def test_nested_classes_and_decorator_labels():
 def test_category_level_member_for_contiguous_run():
     source = "# category: Config\nA = 1\n# category: Config\nB = 2\n"
     scope = build_index(Path("example.py"), source)[0]
-    assert scope.members[0].label == "<entire category>"
+    assert scope.members[0].label == "-- entire category --"
     assert scope.members[0].synthetic
     assert scope.members[0].span.start == source.index("A = 1")
     assert scope.members[0].span.end == len(source)

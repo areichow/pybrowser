@@ -29,6 +29,7 @@ from .widgets.diagnostics_panel import DiagnosticsPanel
 from .widgets.typecheck_preferences import TypeCheckPreferencesDialog
 from .typecheck_worker import TypeCheckSignals, TypeCheckTask
 from .theme import apply_theme
+from .conventions import category_sort_key, display_scope, is_special_category
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
 from PySide6.QtWidgets import QTextEdit
@@ -82,6 +83,8 @@ class MainWindow(QMainWindow):
         self.modules.setHeaderHidden(True)
         self.scopes = QListWidget()
         self.categories = QListWidget()
+        self.categories.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.categories.customContextMenuRequested.connect(self._categories_context_menu)
         self.members = QListWidget()
         self.members.setItemDelegate(MemberDelegate(self.members))
         self.members.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -106,7 +109,7 @@ class MainWindow(QMainWindow):
         self.find_text.setClearButtonEnabled(True)
         self.find_text.returnPressed.connect(self.execute_find)
         self.find_text.textChanged.connect(self._search_text_changed)
-        self.current_entity_only = QCheckBox("Current method/entity only")
+        self.current_entity_only = QCheckBox("Current Member Only")
         self.current_entity_only.setChecked(True)
         self.current_entity_only.toggled.connect(self._search_scope_changed)
         self.match_indicator = QLabel("0 matches")
@@ -215,7 +218,7 @@ class MainWindow(QMainWindow):
         structure_menu = self.menuBar().addMenu("&Structure")
         commands = [
             ("New Function...", self.new_function), ("New Class...", self.new_class),
-            ("New Method...", self.new_method), ("New Category...", self.new_category),
+            ("New Method...", self.new_method),
             ("Rename Category...", self.rename_current_category),
             ("Move Entity to Category...", self.move_current_member),
             ("Duplicate Entity", self.duplicate_current_member),
@@ -593,7 +596,7 @@ class MainWindow(QMainWindow):
 
             categories = sorted(
                 dict.fromkeys(item.category for item in self.scope.members),
-                key=lambda value: (value == "Uncategorized", value.casefold()),
+                key=category_sort_key,
             )
             blocker = QSignalBlocker(self.categories)
             self.categories.clear()
@@ -668,7 +671,7 @@ class MainWindow(QMainWindow):
             return
         self.loading = True
         self.scopes.clear()
-        self.scopes.addItems([item.name for item in self.doc.scopes])
+        self.scopes.addItems([display_scope(item.name) for item in self.doc.scopes])
         self.loading = False
         if self.scopes.count():
             self.scopes.setCurrentRow(0)
@@ -850,7 +853,7 @@ class MainWindow(QMainWindow):
             return
         self.scope = self.doc.scopes[row]
         self.categories.clear()
-        self.categories.addItems(sorted(dict.fromkeys(item.category for item in self.scope.members), key=lambda value: (value == "Uncategorized", value.casefold())))
+        self.categories.addItems(sorted(dict.fromkeys(item.category for item in self.scope.members), key=category_sort_key))
         if self.categories.count():
             self.categories.setCurrentRow(0)
 
@@ -882,7 +885,7 @@ class MainWindow(QMainWindow):
         if member:
             self.editor.setPlainText(self.doc.source(member))
             self.editor.document().setModified(False)
-            self.crumb.setText(f"{self.doc.path.name} > {member.scope} > {member.category} > {member.label}")
+            self.crumb.setText(f"{self.doc.path.name} > {display_scope(member.scope)} > {member.category} > {member.label}")
         else:
             self.editor.clear()
         self.loading = False
@@ -992,17 +995,44 @@ class MainWindow(QMainWindow):
         return callable_name_from_label(self.member.label) if self.member else ""
 
     def _members_context_menu(self, position):
-        if not self.member or self.member.synthetic:
+        member = self.member
+        if not member:
             return
-        name = callable_name_from_label(self.member.label)
         menu = QMenu(self)
-        implementors_action = menu.addAction(f"Implementers of {name}...")
-        senders_action = menu.addAction(f"Senders of {name}...")
-        chosen = menu.exec(self.members.viewport().mapToGlobal(position))
-        if chosen == implementors_action:
-            self.show_implementers(name)
-        elif chosen == senders_action:
-            self.show_senders(name)
+        if member.synthetic:
+            rename = menu.addAction("Rename category...", self.rename_current_category)
+            if is_special_category(member.category) or member.category == "as yet unclassified":
+                rename.setEnabled(False)
+            menu.addAction("New method in category...", self.new_method)
+        else:
+            menu.addAction("Move to category...", self.move_current_member)
+            menu.addAction("Duplicate", self.duplicate_current_member)
+            menu.addAction("Delete...", self.delete_current_member)
+            if member.kind.value in {"function", "method"}:
+                menu.addSeparator()
+                name = callable_name_from_label(member.label)
+                menu.addAction(f"Implementers of {name}...", lambda: self.show_implementers(name))
+                menu.addAction(f"Senders of {name}...", lambda: self.show_senders(name))
+                if member.scope != "<module>":
+                    kind_menu = menu.addMenu("Convert method kind")
+                    for title, kind in (("Instance method", "instance"), ("Static method", "static"), ("Class method", "class"), ("Property", "property")):
+                        kind_menu.addAction(title, lambda checked=False, value=kind: self.convert_current_method(value))
+        menu.exec(self.members.viewport().mapToGlobal(position))
+
+    def _categories_context_menu(self, position):
+        item = self.categories.itemAt(position)
+        if item is None:
+            return
+        self.categories.setCurrentItem(item)
+        category = item.text()
+        menu = QMenu(self)
+        rename = menu.addAction("Rename category...", self.rename_current_category)
+        # Inferred special categories do not necessarily have source metadata to rename.
+        if is_special_category(category) or category == "as yet unclassified":
+            rename.setEnabled(False)
+            rename.setToolTip("Built-in and inferred categories cannot be renamed")
+        menu.addAction("New method in category...", self.new_method)
+        menu.exec(self.categories.viewport().mapToGlobal(position))
 
     def _editor_context_menu(self, position):
         menu = self.editor.createStandardContextMenu()
@@ -1116,13 +1146,6 @@ class MainWindow(QMainWindow):
         if ok:
             try: self._apply_structural_edit(add_method(self.doc, self.scope.name, name, category, kind), f"Added {kind} {name}")
             except StructuralEditError as exc: QMessageBox.warning(self, "Invalid method", str(exc))
-
-    def new_category(self):
-        if not self.doc or not self.scope:
-            return
-        category, ok = QInputDialog.getText(self, "New Category", "Category name:")
-        if ok and category.strip():
-            QMessageBox.information(self, "New Category", "A category becomes part of Python source when its first member is added. Use New Method or Move Entity to Category and enter this category name.")
 
     def rename_current_category(self):
         if not self.doc or not self.categories.currentItem():

@@ -14,7 +14,7 @@ def real(scope):
 
 
 def test_add_function_class_and_method():
-    first = add_function(doc("VALUE = 1\n"), "run", "Functions")
+    first = add_function(doc("VALUE = 1\n"), "run", "-- functions --")
     validate(first.text, "x.py")
     second = add_class(doc(first.text), "App", "Classes")
     validate(second.text, "x.py")
