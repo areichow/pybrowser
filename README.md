@@ -20,3 +20,11 @@ py -3.14 -m pip install -e .[dev]
 py -3.14 -m pybrowser
 py -3.14 -m pytest
 ```
+
+
+### Revision 7.1
+- Function and method labels use `name  (arg1, arg2)` formatting, including empty `()`.
+- Parameter blocks are painted cream in the Members pane.
+- Editor and Members context menus provide **Implementers of...**.
+- Members context menu provides **Senders of...**.
+- Multi-result query windows provide a result list and syntax-highlighted source preview; double-click navigates the main browser.

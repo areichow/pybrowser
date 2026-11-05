@@ -89,7 +89,12 @@ def _inferred_category(node, in_class: bool) -> str:
 
 def _function_label(node: cst.FunctionDef) -> str:
     prefix = "async " if node.asynchronous else ""
-    label = f"{prefix}{node.name.value}{_code(node.params)}"
+    params = _code(node.params)
+    if not params.startswith("("):
+        params = f"({params})"
+    # LibCST parameter rendering can be compact; normalize comma spacing for the browser.
+    params = re.sub(r",\s*", ", ", " ".join(params.split()))
+    label = f"{prefix}{node.name.value}  {params}"
     decorators = {_code(item.decorator) for item in node.decorators}
     if "property" in decorators:
         label += " [property]"

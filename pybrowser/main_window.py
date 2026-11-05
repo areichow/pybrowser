@@ -1,5 +1,5 @@
 from pathlib import Path
-from PySide6.QtCore import QFileSystemWatcher, QSettings, QSignalBlocker, QThreadPool, QTimer, Qt
+from PySide6.QtCore import QFileSystemWatcher, QPoint, QSettings, QSignalBlocker, QThreadPool, QTimer, Qt
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
@@ -12,6 +12,9 @@ from .index_cache import ModuleIndexCache
 from .indexing import IndexSignals, IndexWorldTask, ModuleIndexResult
 from .navigation import Location, NavigationHistory, search_file, symbols_for_module
 from .widgets.quick_dialog import QuickDialog
+from .widgets.member_delegate import MemberDelegate
+from .widgets.code_query_dialog import CodeQueryDialog
+from .code_queries import callable_name_from_label, implementers, senders
 from .structural import (
     StructuralEditError, add_class, add_function, add_method, convert_method_kind,
     create_package_init, delete_member, duplicate_member, move_member, rename_category,
@@ -68,6 +71,9 @@ class MainWindow(QMainWindow):
         self.scopes = QListWidget()
         self.categories = QListWidget()
         self.members = QListWidget()
+        self.members.setItemDelegate(MemberDelegate(self.members))
+        self.members.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.members.customContextMenuRequested.connect(self._members_context_menu)
         top = QSplitter(Qt.Orientation.Horizontal)
         for title, widget in (("Modules", self.modules), ("Scopes", self.scopes), ("Categories", self.categories), ("Members", self.members)):
             box = QWidget()
@@ -103,6 +109,8 @@ class MainWindow(QMainWindow):
 
         self.crumb = QLabel("Open a Python file to begin")
         self.editor = Editor()
+        self.editor.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.editor.customContextMenuRequested.connect(self._editor_context_menu)
         font = QFont("0xProto Nerd Font", 11)
         font.setStyleHint(QFont.StyleHint.Monospace)
         self.editor.setFont(font)
@@ -802,6 +810,71 @@ class MainWindow(QMainWindow):
             return
         line, ok = QInputDialog.getInt(self, "Go to Line", "Line number:", 1, 1, max(1, len(self.doc.text.splitlines())))
         if ok: self._select_line_result(line)
+
+    def _callable_name_at_cursor(self):
+        cursor = self.editor.textCursor()
+        cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+        value = cursor.selectedText().strip()
+        if value and value.isidentifier():
+            return value
+        return callable_name_from_label(self.member.label) if self.member else ""
+
+    def _members_context_menu(self, position):
+        if not self.member or self.member.synthetic:
+            return
+        name = callable_name_from_label(self.member.label)
+        menu = QMenu(self)
+        implementors_action = menu.addAction(f"Implementers of {name}...")
+        senders_action = menu.addAction(f"Senders of {name}...")
+        chosen = menu.exec(self.members.viewport().mapToGlobal(position))
+        if chosen == implementors_action:
+            self.show_implementers(name)
+        elif chosen == senders_action:
+            self.show_senders(name)
+
+    def _editor_context_menu(self, position):
+        menu = self.editor.createStandardContextMenu()
+        name = self._callable_name_at_cursor()
+        if name:
+            menu.addSeparator()
+            action = menu.addAction(f"Implementers of {name}...")
+        else:
+            action = None
+        chosen = menu.exec(self.editor.viewport().mapToGlobal(position))
+        if action and chosen == action:
+            self.show_implementers(name)
+
+    def show_implementers(self, name):
+        if not self.world or not name:
+            return
+        results = implementers(self.world, name)
+        if len(results) == 1:
+            self._navigate_code_query_result(results[0])
+            return
+        if not results:
+            QMessageBox.information(self, f"Implementers of {name}", f"No implementations of {name} were found in this world.")
+            return
+        self._show_code_query_dialog(f"Implementers of {name}", results)
+
+    def show_senders(self, name):
+        if not self.world or not name:
+            return
+        results = senders(self.world, name)
+        if not results:
+            QMessageBox.information(self, f"Senders of {name}", f"No senders of {name} were found in this world.")
+            return
+        self._show_code_query_dialog(f"Senders of {name}", results)
+
+    def _show_code_query_dialog(self, title, results):
+        dialog = CodeQueryDialog(title, results, self)
+        dialog.navigate_requested.connect(self._navigate_code_query_result)
+        dialog.exec()
+
+    def _navigate_code_query_result(self, result):
+        if not self._confirm_discard():
+            return
+        self._select_module_path(result.module, (result.scope, result.category, result.label))
+        self._select_line_result(result.line)
 
     def _apply_structural_edit(self, edit, description):
         if not self.doc:
