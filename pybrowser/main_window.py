@@ -17,6 +17,8 @@ from .widgets.code_query_dialog import CodeQueryDialog
 from .widgets.file_view import FileViewWindow
 from .widgets.browser_lists import CategoryListWidget, MemberListWidget
 from .workspace import Workspace
+from .work_tasks import WorkSignals, WorldQueryTask
+from .widgets.busy_indicator import BusyIndicator
 from .code_queries import callable_name_from_label, implementers, senders
 from .structural import (
     StructuralEditError, add_class, add_function, add_method, convert_method_kind,
@@ -60,6 +62,13 @@ class MainWindow(QMainWindow):
         self.typecheck_signals = TypeCheckSignals()
         self.typecheck_signals.finished.connect(self._typecheck_finished)
         self.typecheck_running = False
+        self.work_signals = WorkSignals()
+        self.work_signals.started.connect(self._work_started)
+        self.work_signals.progress.connect(self._work_progress)
+        self.work_signals.finished.connect(self._work_finished)
+        self.work_signals.failed.connect(self._work_failed)
+        self.work_sequence = 0
+        self.active_work = {}
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setSingleShot(True)
         self.refresh_timer.setInterval(250)
@@ -159,7 +168,13 @@ class MainWindow(QMainWindow):
         main.addWidget(lower)
         main.addWidget(self.diagnostics)
         main.setSizes([280, 620, 0])
-        self.setCentralWidget(main)
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        self.busy_indicator = BusyIndicator()
+        central_layout.addWidget(self.busy_indicator)
+        central_layout.addWidget(main, 1)
+        self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
 
     def _actions(self):
@@ -811,6 +826,7 @@ class MainWindow(QMainWindow):
             return
         task = IndexWorldTask(modules, generation, self.index_signals, self.index_cancelled)
         self.thread_pool.start(task)
+        self.busy_indicator.begin("Source model indexing", len(modules))
         self.statusBar().showMessage(f"Indexing 0/{len(modules)} modules...")
 
     def _index_result(self, result: ModuleIndexResult):
@@ -821,6 +837,7 @@ class MainWindow(QMainWindow):
 
     def _index_progress(self, generation, completed, total):
         if generation == self.index_generation:
+            self.busy_indicator.update_progress(completed, total, "indexing")
             self.statusBar().showMessage(f"Indexing {completed}/{total} modules...")
 
     def _index_finished(self, generation):
@@ -828,6 +845,7 @@ class MainWindow(QMainWindow):
             return
         errors = sum(1 for entry in self.world.modules if (cached := self.index_cache.get(entry.path)) and cached.error)
         suffix = f", {errors} parse error(s)" if errors else ""
+        self.busy_indicator.end(f"Source model ready: {len(self.world.modules)} modules{suffix}")
         self.statusBar().showMessage(f"Indexed {len(self.world.modules)} modules{suffix}", 6000)
 
     def _update_module_tree_item(self, path):
@@ -961,16 +979,7 @@ class MainWindow(QMainWindow):
         query, ok = QInputDialog.getText(self, "Find in World", "Search text:")
         if not ok or not query:
             return
-        results = []
-        for entry in self.world.modules:
-            try: results.extend(search_file(entry.path, entry.dotted_name, query))
-            except (OSError, UnicodeError): pass
-        dialog = QuickDialog(f"Find in World: {query} ({len(results)} matches)", results, self)
-        if dialog.exec():
-            result = dialog.selected_entry()
-            if result and self._confirm_discard():
-                self._select_module_path(result.module)
-                self._select_line_result(result.line, result.column, query)
+        self._start_world_work("world_search", query)
 
     def _select_line_result(self, line, column=1, query=None):
         if not self.doc:
@@ -1169,25 +1178,57 @@ class MainWindow(QMainWindow):
             self.show_implementers(name)
 
     def show_implementers(self, name):
-        if not self.world or not name:
-            return
-        results = implementers(self.world, name)
-        if len(results) == 1:
-            self._navigate_code_query_result(results[0])
-            return
-        if not results:
-            QMessageBox.information(self, f"Implementers of {name}", f"No implementations of {name} were found in this world.")
-            return
-        self._show_code_query_dialog(f"Implementers of {name}", results)
+        if self.world and name:
+            self._start_world_work("implementers", name)
 
     def show_senders(self, name):
-        if not self.world or not name:
+        if self.world and name:
+            self._start_world_work("senders", name)
+
+    def _start_world_work(self, operation, argument):
+        self.work_sequence += 1
+        task_id = self.work_sequence
+        self.active_work[task_id] = (operation, argument)
+        self.busy_indicator.begin(f"Source model working: {operation.replace('_', ' ')}")
+        task = WorldQueryTask(task_id, operation, self.world, argument, self.work_signals)
+        self.thread_pool.start(task)
+
+    def _work_started(self, task_id, label):
+        if task_id in self.active_work:
+            self.busy_indicator.begin(label)
+            self.statusBar().showMessage(label)
+
+    def _work_progress(self, task_id, completed, total, detail):
+        if task_id in self.active_work:
+            self.busy_indicator.update_progress(completed, total, detail)
+
+    def _work_finished(self, task_id, operation, results):
+        context = self.active_work.pop(task_id, None)
+        if context is None:
             return
-        results = senders(self.world, name)
-        if not results:
-            QMessageBox.information(self, f"Senders of {name}", f"No senders of {name} were found in this world.")
+        _operation, argument = context
+        self.busy_indicator.end(f"Source model ready: {len(results)} result(s)")
+        self.statusBar().showMessage(f"{len(results)} result(s)", 5000)
+        if operation == "world_search":
+            dialog = QuickDialog(f"Find in World: {argument} ({len(results)} matches)", results, self)
+            if dialog.exec():
+                result = dialog.selected_entry()
+                if result and self._confirm_discard():
+                    self._select_module_path(result.module)
+                    self._select_line_result(result.line, result.column, argument)
             return
-        self._show_code_query_dialog(f"Senders of {name}", results)
+        title = f"{'Implementers' if operation == 'implementers' else 'Senders'} of {argument}"
+        if operation == "implementers" and len(results) == 1:
+            self._navigate_code_query_result(results[0])
+        elif results:
+            self._show_code_query_dialog(title, results)
+        else:
+            QMessageBox.information(self, title, f"No {operation} of {argument} were found in this world.")
+
+    def _work_failed(self, task_id, operation, message):
+        self.active_work.pop(task_id, None)
+        self.busy_indicator.end("Source model ready after an error")
+        QMessageBox.warning(self, "Source model query failed", message)
 
     def _show_code_query_dialog(self, title, results):
         dialog = CodeQueryDialog(title, results, self.workspace, self)

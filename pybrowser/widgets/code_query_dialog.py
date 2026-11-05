@@ -21,12 +21,14 @@ class CodeQueryDialog(QDialog):
         self.setWindowTitle(f"{title} [{len(self.results_data)}][*]")
         self.resize(900, 650)
         self.summary = QLabel(f"{len(self.results_data)} result(s)")
+        self.edit_status = QLabel("No pending edits")
+        self.edit_status.setStyleSheet("color: #8a8d91; font-weight: bold")
         self.results = QListWidget(); self.results.addItems([item.display for item in self.results_data])
         self.preview = Editor()
         self.preview.browse_class_requested.connect(self.workspace.request_class_browser)
-        self.preview.modificationChanged.connect(self.setWindowModified)
+        self.preview.modificationChanged.connect(self._modified_changed)
         split = QSplitter(Qt.Orientation.Vertical); split.addWidget(self.results); split.addWidget(self.preview); split.setSizes([210, 440])
-        layout = QVBoxLayout(self); layout.addWidget(self.summary); layout.addWidget(split)
+        layout = QVBoxLayout(self); layout.addWidget(self.summary); layout.addWidget(self.edit_status); layout.addWidget(split)
         self.results.currentRowChanged.connect(self._preview)
         self.results.itemDoubleClicked.connect(lambda _item: self._navigate())
         self.workspace.file_changed.connect(self._workspace_changed)
@@ -34,6 +36,23 @@ class CodeQueryDialog(QDialog):
         abandon = QAction("Abandon", self); abandon.setShortcut("Ctrl+L"); abandon.triggered.connect(self.abandon)
         self.addActions([save, abandon])
         if self.results.count(): self.results.setCurrentRow(0)
+
+    def _modified_changed(self, modified):
+        self.setWindowModified(modified)
+        if modified:
+            self.edit_status.setText("● Unsaved changes: Ctrl+S to save, Ctrl+L to abandon")
+            self.edit_status.setStyleSheet("color: #ffd166; font-weight: bold")
+            item = self.results.currentItem()
+            if item:
+                item.setForeground(Qt.GlobalColor.yellow)
+                font = item.font(); font.setBold(True); item.setFont(font)
+        else:
+            self.edit_status.setText("No pending edits")
+            self.edit_status.setStyleSheet("color: #8a8d91; font-weight: bold")
+            item = self.results.currentItem()
+            if item:
+                item.setForeground(self.palette().text().color())
+                font = item.font(); font.setBold(False); item.setFont(font)
 
     def _preview(self, row):
         if self.preview.document().isModified():

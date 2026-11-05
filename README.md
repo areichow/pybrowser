@@ -52,3 +52,12 @@ py -3.14 -m pytest
 - `Ctrl+B` in a code editor opens another browser on the selected class name when the class is indexed.
 - Implementers and Senders windows are modeless, editable, and support `Ctrl+S` and `Ctrl+L`; saved changes refresh browser and file-view windows.
 - Scopes context menus include **New Class...**. Categories context menus include **New Method...** and **New Function...**.
+
+
+## Revision 10.1 responsive source model and query edit indicators
+
+- Adds an always-visible Source Model activity strip with operation text and determinate progress for module indexing, Implementers, Senders, and Find in World.
+- Moves Implementers, Senders, and world-wide text scans onto `QThreadPool` workers. The Qt UI thread now only receives progress and final immutable results.
+- Long-running world scans report the current module and completed/total counts.
+- Implementers and Senders windows show a bright yellow `Unsaved changes` banner, bold/yellow current result, and the standard modified-window marker until Ctrl+S or Ctrl+L clears the edit.
+- Existing background indexing now reports through the same activity strip rather than only the transient status bar.

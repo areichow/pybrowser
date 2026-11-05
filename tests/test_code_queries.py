@@ -22,3 +22,13 @@ def test_implementers_and_senders(tmp_path):
     found = senders(world, "run")
     assert len(found) == 1
     assert found[0].label.startswith("caller")
+
+
+def test_query_progress_callback(tmp_path):
+    (tmp_path / "a.py").write_text("def run():\n    pass\n")
+    (tmp_path / "b.py").write_text("def run():\n    pass\n")
+    world = open_world(tmp_path)
+    progress = []
+    found = implementers(world, "run", lambda completed, total, detail: progress.append((completed, total, detail)))
+    assert len(found) == 2
+    assert progress[-1][0:2] == (2, 2)

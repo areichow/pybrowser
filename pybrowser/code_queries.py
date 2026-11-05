@@ -44,9 +44,10 @@ def _entry_name(world, path: Path) -> str:
     return entry.dotted_name if entry else path.stem
 
 
-def implementers(world, name: str) -> tuple[CodeQueryResult, ...]:
+def implementers(world, name: str, progress=None) -> tuple[CodeQueryResult, ...]:
     results = []
-    for entry in world.modules:
+    total = len(world.modules)
+    for index, entry in enumerate(world.modules, 1):
         try:
             text = _read(entry.path)
             scopes = build_index(entry.path, text)
@@ -58,6 +59,8 @@ def implementers(world, name: str) -> tuple[CodeQueryResult, ...]:
                     continue
                 if callable_name_from_label(member.label) == name:
                     results.append(CodeQueryResult(entry.path, entry.dotted_name, scope.name, member.category, member.label, member.span.first, text[member.span.start:member.span.end]))
+        if progress:
+            progress(index, total, entry.dotted_name)
     return tuple(results)
 
 
@@ -70,9 +73,10 @@ def _called_name(call: ast.Call) -> str | None:
     return None
 
 
-def senders(world, name: str) -> tuple[CodeQueryResult, ...]:
+def senders(world, name: str, progress=None) -> tuple[CodeQueryResult, ...]:
     results = []
-    for entry in world.modules:
+    total = len(world.modules)
+    for index, entry in enumerate(world.modules, 1):
         try:
             text = _read(entry.path)
             tree = ast.parse(text, filename=str(entry.path))
@@ -89,4 +93,6 @@ def senders(world, name: str) -> tuple[CodeQueryResult, ...]:
                 contained = sorted(line for line in call_lines if member.span.first <= line <= member.span.last)
                 if contained:
                     results.append(CodeQueryResult(entry.path, entry.dotted_name, scope.name, member.category, member.label, contained[0], text[member.span.start:member.span.end]))
+        if progress:
+            progress(index, total, entry.dotted_name)
     return tuple(results)
