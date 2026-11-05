@@ -10,6 +10,8 @@ from .parser import ParseError, read_document, replacement, validate
 from .project import ModuleEntry, World, open_world
 from .index_cache import ModuleIndexCache
 from .indexing import IndexSignals, IndexWorldTask, ModuleIndexResult
+from .navigation import Location, NavigationHistory, search_file, symbols_for_module
+from .widgets.quick_dialog import QuickDialog
 from .structural import (
     StructuralEditError, add_class, add_function, add_method, convert_method_kind,
     create_package_init, delete_member, duplicate_member, move_member, rename_category,
@@ -48,6 +50,8 @@ class MainWindow(QMainWindow):
         self.scope = None
         self.member = None
         self.loading = False
+        self.history = NavigationHistory()
+        self.navigating_history = False
         self.search_matches: tuple[SearchMatch, ...] = ()
         self.search_index = -1
         self.search_source = ""
@@ -136,12 +140,32 @@ class MainWindow(QMainWindow):
         abandon_action = QAction("Abandon Entity Changes", self)
         abandon_action.setShortcut("Ctrl+L")
         abandon_action.triggered.connect(self.abandon_changes)
+        quick_module_action = QAction("Quick Open Module", self)
+        quick_module_action.setShortcut("Ctrl+P")
+        quick_module_action.triggered.connect(self.quick_open_module)
+        quick_symbol_action = QAction("Quick Open Symbol", self)
+        quick_symbol_action.setShortcut("Ctrl+T")
+        quick_symbol_action.triggered.connect(self.quick_open_symbol)
+        project_find_action = QAction("Find in World", self)
+        project_find_action.setShortcut("Ctrl+Shift+F")
+        project_find_action.triggered.connect(self.find_in_world)
+        back_action = QAction("Back", self)
+        back_action.setShortcut("Alt+Left")
+        back_action.triggered.connect(self.navigate_back)
+        forward_action = QAction("Forward", self)
+        forward_action.setShortcut("Alt+Right")
+        forward_action.triggered.connect(self.navigate_forward)
+        goto_action = QAction("Go to Line", self)
+        goto_action.setShortcut("Ctrl+Alt+G")
+        goto_action.triggered.connect(self.go_to_line)
+        focus_crumb_action = QAction("Focus Location", self)
+        focus_crumb_action.setShortcut("Ctrl+Alt+L")
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addActions([open_action, folder_action, save_action])
         self.recent_menu = file_menu.addMenu("Recent Worlds")
         self._rebuild_recent_menu()
         edit_menu = self.menuBar().addMenu("&Edit")
-        edit_menu.addActions([find_action, next_action])
+        edit_menu.addActions([find_action, next_action, project_find_action])
         edit_menu.addSeparator()
         edit_menu.addAction(abandon_action)
         structure_menu = self.menuBar().addMenu("&Structure")
@@ -163,7 +187,9 @@ class MainWindow(QMainWindow):
         structure_menu.addSeparator()
         init_action = structure_menu.addAction("Create Package __init__.py")
         init_action.triggered.connect(self.create_init_file)
-        self.addActions([open_action, save_action, find_action, next_action, abandon_action])
+        navigate_menu = self.menuBar().addMenu("&Navigate")
+        navigate_menu.addActions([quick_module_action, quick_symbol_action, back_action, forward_action, goto_action])
+        self.addActions([open_action, save_action, find_action, next_action, abandon_action, quick_module_action, quick_symbol_action, project_find_action, back_action, forward_action, goto_action])
 
     def focus_find(self):
         self.find_text.setFocus()
@@ -684,6 +710,98 @@ class MainWindow(QMainWindow):
         self._update_modified_indicator(False)
         if self.find_text.text() and self.current_entity_only.isChecked():
             self.execute_find()
+        if member and not self.navigating_history:
+            self.history.visit(self._current_location())
+
+    def _current_location(self):
+        if not self.doc or not self.member:
+            return None
+        return Location(self.doc.path, self.member.scope, self.member.category, self.member.label, self.editor.textCursor().position())
+
+    def quick_open_module(self):
+        if not self.world:
+            return
+        class ModuleChoice:
+            def __init__(self, entry): self.entry = entry; self.display = f"{entry.dotted_name}  |  {entry.relative_path}"
+        dialog = QuickDialog("Quick Open Module", [ModuleChoice(entry) for entry in self.world.modules], self)
+        if dialog.exec():
+            choice = dialog.selected_entry()
+            if choice and self._confirm_discard(): self._select_module_path(choice.entry.path)
+
+    def _world_symbols(self):
+        values = []
+        if not self.world:
+            return values
+        for entry in self.world.modules:
+            cached = self.index_cache.get(entry.path)
+            if cached and cached.scopes:
+                values.extend(symbols_for_module(entry.path, entry.dotted_name, cached.scopes))
+        return values
+
+    def quick_open_symbol(self):
+        dialog = QuickDialog("Quick Open Class, Method, or Function", self._world_symbols(), self)
+        if dialog.exec():
+            entry = dialog.selected_entry()
+            if entry: self._navigate_symbol(entry)
+
+    def _navigate_symbol(self, entry):
+        if not self._confirm_discard():
+            return
+        self._select_module_path(entry.module, (entry.scope, entry.category, entry.label))
+
+    def find_in_world(self):
+        if not self.world:
+            return
+        query, ok = QInputDialog.getText(self, "Find in World", "Search text:")
+        if not ok or not query:
+            return
+        results = []
+        for entry in self.world.modules:
+            try: results.extend(search_file(entry.path, entry.dotted_name, query))
+            except (OSError, UnicodeError): pass
+        dialog = QuickDialog(f"Find in World: {query} ({len(results)} matches)", results, self)
+        if dialog.exec():
+            result = dialog.selected_entry()
+            if result and self._confirm_discard():
+                self._select_module_path(result.module)
+                self._select_line_result(result.line, result.column, query)
+
+    def _select_line_result(self, line, column=1, query=None):
+        if not self.doc:
+            return
+        offset = 0
+        lines = self.doc.text.splitlines(keepends=True)
+        offset = sum(len(value) for value in lines[:max(0, line - 1)]) + max(0, column - 1)
+        member = self._member_for_file_offset(offset)
+        if member:
+            self._select_browser_member(member)
+            local = offset - member.span.start
+            end = local + len(query or "")
+            self._select_editor_range(local, end if end > local else local)
+
+    def navigate_back(self):
+        self._navigate_history_location(self.history.back())
+
+    def navigate_forward(self):
+        self._navigate_history_location(self.history.forward())
+
+    def _navigate_history_location(self, location):
+        if not location or not self._confirm_discard():
+            return
+        self.navigating_history = True
+        try:
+            self._select_module_path(location.module, (location.scope, location.category, location.member_label))
+            cursor = self.editor.textCursor()
+            cursor.setPosition(min(location.cursor_offset, len(self.editor.toPlainText())))
+            self.editor.setTextCursor(cursor)
+        finally:
+            self.navigating_history = False
+
+    def go_to_line(self):
+        if not self.doc:
+            return
+        line, ok = QInputDialog.getInt(self, "Go to Line", "Line number:", 1, 1, max(1, len(self.doc.text.splitlines())))
+        if ok: self._select_line_result(line)
 
     def _apply_structural_edit(self, edit, description):
         if not self.doc:
