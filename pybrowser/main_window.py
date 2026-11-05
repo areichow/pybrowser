@@ -25,6 +25,9 @@ from .search import SearchMatch, find_all
 from .widgets.editor import Editor
 from .widgets.preferences_dialog import PreferencesDialog
 from .widgets.replace_dialog import ReplaceDialog
+from .widgets.diagnostics_panel import DiagnosticsPanel
+from .widgets.typecheck_preferences import TypeCheckPreferencesDialog
+from .typecheck_worker import TypeCheckSignals, TypeCheckTask
 from .theme import apply_theme
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
@@ -46,6 +49,9 @@ class MainWindow(QMainWindow):
         self.index_signals.result.connect(self._index_result)
         self.index_signals.progress.connect(self._index_progress)
         self.index_signals.finished.connect(self._index_finished)
+        self.typecheck_signals = TypeCheckSignals()
+        self.typecheck_signals.finished.connect(self._typecheck_finished)
+        self.typecheck_running = False
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setSingleShot(True)
         self.refresh_timer.setInterval(250)
@@ -126,9 +132,13 @@ class MainWindow(QMainWindow):
         lower_layout.addWidget(self.crumb)
         lower_layout.addWidget(self.editor)
         main = QSplitter(Qt.Orientation.Vertical)
+        self.diagnostics = DiagnosticsPanel()
+        self.diagnostics.activated.connect(self._navigate_diagnostic)
+        self.diagnostics.setVisible(False)
         main.addWidget(top)
         main.addWidget(lower)
-        main.setSizes([280, 620])
+        main.addWidget(self.diagnostics)
+        main.setSizes([280, 620, 0])
         self.setCentralWidget(main)
         self.setStatusBar(QStatusBar())
 
@@ -156,6 +166,14 @@ class MainWindow(QMainWindow):
         comment_action.triggered.connect(self.editor.toggle_comment)
         preferences_action = QAction("Preferences...", self)
         preferences_action.triggered.connect(self.show_preferences)
+        typecheck_action = QAction("Run Type Check", self)
+        typecheck_action.setShortcut("Ctrl+Shift+T")
+        typecheck_action.triggered.connect(self.run_type_check)
+        toggle_diagnostics_action = QAction("Show Diagnostics", self)
+        toggle_diagnostics_action.setCheckable(True)
+        toggle_diagnostics_action.toggled.connect(self.diagnostics.setVisible)
+        typecheck_settings_action = QAction("Type Checker Settings...", self)
+        typecheck_settings_action.triggered.connect(self.show_typecheck_settings)
         abandon_action = QAction("Abandon Entity Changes", self)
         abandon_action.setShortcut("Ctrl+L")
         abandon_action.triggered.connect(self.abandon_changes)
@@ -189,6 +207,11 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(abandon_action)
         edit_menu.addSeparator()
         edit_menu.addAction(preferences_action)
+        tools_menu = self.menuBar().addMenu("&Tools")
+        tools_menu.addAction(typecheck_action)
+        tools_menu.addAction(toggle_diagnostics_action)
+        tools_menu.addSeparator()
+        tools_menu.addAction(typecheck_settings_action)
         structure_menu = self.menuBar().addMenu("&Structure")
         commands = [
             ("New Function...", self.new_function), ("New Class...", self.new_class),
@@ -210,7 +233,60 @@ class MainWindow(QMainWindow):
         init_action.triggered.connect(self.create_init_file)
         navigate_menu = self.menuBar().addMenu("&Navigate")
         navigate_menu.addActions([quick_module_action, quick_symbol_action, back_action, forward_action, goto_action])
-        self.addActions([open_action, save_action, find_action, next_action, replace_action, abandon_action, quick_module_action, quick_symbol_action, project_find_action, back_action, forward_action, goto_action])
+        self.addActions([open_action, save_action, find_action, next_action, replace_action, abandon_action, typecheck_action, quick_module_action, quick_symbol_action, project_find_action, back_action, forward_action, goto_action])
+
+    def _typecheck_preferences(self):
+        return {
+            "checker": self.settings.value("typecheck/checker", "auto", str),
+            "executable": self.settings.value("typecheck/executable", "", str),
+            "python_path": self.settings.value("typecheck/pythonPath", "", str),
+        }
+
+    def show_typecheck_settings(self):
+        dialog = TypeCheckPreferencesDialog(self._typecheck_preferences(), self)
+        if dialog.exec():
+            values = dialog.values()
+            self.settings.setValue("typecheck/checker", values["checker"])
+            self.settings.setValue("typecheck/executable", values["executable"])
+            self.settings.setValue("typecheck/pythonPath", values["python_path"])
+
+    def run_type_check(self):
+        if self.typecheck_running:
+            self.statusBar().showMessage("Type checking is already running", 3000)
+            return
+        if not self.world:
+            QMessageBox.information(self, "Type Check", "Open a Python file or directory world first.")
+            return
+        if self.editor.document().isModified():
+            QMessageBox.information(self, "Type Check", "Save or abandon the current entity changes before type checking.")
+            return
+        values = self._typecheck_preferences()
+        target = self.world.modules[0].path if self.world.single_file else self.world.root
+        task = TypeCheckTask(target, values["checker"], values["executable"], values["python_path"], self.typecheck_signals)
+        self.typecheck_running = True
+        self.diagnostics.setVisible(True)
+        self.diagnostics.summary.setText("Type checking in background...")
+        self.statusBar().showMessage("Running type checker...")
+        self.thread_pool.start(task)
+
+    def _typecheck_finished(self, result):
+        self.typecheck_running = False
+        self.diagnostics.set_result(result)
+        self.diagnostics.setVisible(True)
+        if result.fatal_error:
+            self.statusBar().showMessage(f"Type checker failed: {result.fatal_error}", 8000)
+        else:
+            self.statusBar().showMessage(f"Type check complete: {result.error_count} error(s), {result.warning_count} warning(s)", 8000)
+
+    def _navigate_diagnostic(self, diagnostic):
+        if self.editor.document().isModified() and not self._confirm_discard():
+            return
+        path = diagnostic.file.resolve()
+        if not path.exists():
+            self.statusBar().showMessage(f"Diagnostic file no longer exists: {path}", 5000)
+            return
+        self._select_module_path(path)
+        self._select_line_result(diagnostic.line, diagnostic.column)
 
     def _preferences(self):
         return {

@@ -1,29 +1,27 @@
-# PyBrowser Revision 8
+# PyBrowser Revision 9
 
-Revision 8 matures the shared source editor and persists editor preferences.
+Revision 9 adds optional BasedPyright and Pyright type diagnostics without making either checker a required dependency.
 
-## Editing
+## Type checking
 
-- Line-number gutter with active-line emphasis
-- Smart indentation after `:` and dedent after `return`, `raise`, `break`, `continue`, and `pass`
-- Tab and Shift+Tab indentation for selections
-- `Ctrl+/` comment toggling
-- Automatic `()`, `[]`, and `{}` pairs
-- Matching-bracket highlighting
-- `Ctrl+H` Replace and Replace All within the current entity
-- Existing `Ctrl+F`, `Ctrl+G`, `Ctrl+S`, and `Ctrl+L` behavior retained
+- **Tools > Run Type Check** or `Ctrl+Shift+T` analyzes the open file or directory world in a background `QThreadPool` task.
+- Auto-discovery prefers `basedpyright`, then `pyright`, using PATH or the active Python interpreter's Scripts/bin directory.
+- **Tools > Type Checker Settings** selects auto, BasedPyright, or Pyright; allows an executable override; and optionally passes a Python interpreter through `--pythonpath`.
+- The collapsible Diagnostics panel shows severity, file/line/column, diagnostic rule, and message.
+- Double-clicking a diagnostic opens its module and containing browser entity.
+- Unsaved entity edits must be saved or abandoned before analysis, so reported source locations stay valid.
+- Fatal startup, timeout, configuration, and malformed-output failures are shown without affecting ordinary browsing or editing.
 
-## Preferences
+PyBrowser invokes the checker's documented `--outputjson` CLI format. Project configuration remains owned by `pyrightconfig.json` or `[tool.pyright]` in `pyproject.toml`.
 
-**Edit > Preferences** controls:
+Install one optional checker:
 
-- Code font family
-- Code font size from 7 to 32 points
-- Tab width from 1 to 12 spaces
-- Visible whitespace
-- Dark or light application theme
+```powershell
+py -3.14 -m pip install basedpyright
+basedpyright --version
+```
 
-Preferences and main-window geometry are stored through `QSettings`. Because Implementers, Senders, and future source previews use the shared `Editor`, they inherit the code font, tab width, whitespace display, line numbers, bracket matching, and syntax highlighting.
+or install Pyright and make its `pyright` command available on PATH.
 
 ## Run
 
@@ -32,11 +30,3 @@ py -3.14 -m pip install -e .[dev]
 py -3.14 -m pybrowser
 py -3.14 -m pytest
 ```
-
-
-## Revision 8.1 fixes
-
-- Fixes the `QFileSystemWatcher` reload restore tuple so external and structural writes restore the selected scope/category/member without a `TypeError`.
-- Treats `# category:` as browser metadata rather than editable entity source; method editors now begin at decorators or `def`.
-- Moving an entity replaces its associated category directive in place or inserts one immediately before the entity without duplication.
-- Renaming categories continues to operate on metadata even though directives are no longer included in entity source spans.
