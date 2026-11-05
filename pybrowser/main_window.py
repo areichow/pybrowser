@@ -1,5 +1,5 @@
 from pathlib import Path
-from PySide6.QtCore import QFileSystemWatcher, QSettings, QThreadPool, QTimer, Qt
+from PySide6.QtCore import QFileSystemWatcher, QSettings, QSignalBlocker, QThreadPool, QTimer, Qt
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -129,13 +129,18 @@ class MainWindow(QMainWindow):
         next_action = QAction("Find Next", self)
         next_action.setShortcut("Ctrl+G")
         next_action.triggered.connect(self.find_next)
+        abandon_action = QAction("Abandon Entity Changes", self)
+        abandon_action.setShortcut("Ctrl+L")
+        abandon_action.triggered.connect(self.abandon_changes)
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addActions([open_action, folder_action, save_action])
         self.recent_menu = file_menu.addMenu("Recent Worlds")
         self._rebuild_recent_menu()
         edit_menu = self.menuBar().addMenu("&Edit")
         edit_menu.addActions([find_action, next_action])
-        self.addActions([open_action, save_action, find_action, next_action])
+        edit_menu.addSeparator()
+        edit_menu.addAction(abandon_action)
+        self.addActions([open_action, save_action, find_action, next_action, abandon_action])
 
     def focus_find(self):
         self.find_text.setFocus()
@@ -266,22 +271,82 @@ class MainWindow(QMainWindow):
     def _modified(self):
         if self.loading:
             return
-        self.setWindowModified(self.editor.document().isModified())
+        modified = self.editor.document().isModified()
+        self.setWindowModified(modified)
+        self._update_modified_indicator(modified)
         if self.find_text.text() and self.current_entity_only.isChecked():
-            # Keep the entity-only count tied to exactly what is visible in the editor.
             self.execute_find()
         elif self.search_source:
-            # File offsets are stale after an edit; require Enter or Ctrl+G to rebuild them.
             self._search_text_changed()
 
     def _confirm_discard(self):
         if not self.editor.document().isModified():
             return True
-        answer = QMessageBox.question(self, "Unsaved member edit", "Save the current member before navigating?", QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Save)
-        if answer == QMessageBox.StandardButton.Save:
-            self.save()
-            return not self.editor.document().isModified()
-        return answer == QMessageBox.StandardButton.Discard
+        name = self.member.label if self.member else "this entity"
+        answer = QMessageBox.question(
+            self,
+            "Abandon unsaved changes?",
+            f"Do you want to abandon changes to {name}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.abandon_changes()
+            return True
+        self._restore_current_browser_selection()
+        return False
+
+    def abandon_changes(self):
+        """Restore the selected entity from the last parsed on-disk document."""
+        if not self.doc or not self.member or not self.editor.document().isModified():
+            self.statusBar().showMessage("No entity changes to abandon", 3000)
+            return
+        cursor_position = self.editor.textCursor().position()
+        self.loading = True
+        try:
+            self.editor.setPlainText(self.doc.source(self.member))
+            self.editor.document().setModified(False)
+            cursor = self.editor.textCursor()
+            cursor.setPosition(min(cursor_position, len(self.editor.toPlainText())))
+            self.editor.setTextCursor(cursor)
+        finally:
+            self.loading = False
+        self.setWindowModified(False)
+        self._update_modified_indicator(False)
+        self._search_text_changed()
+        self.statusBar().showMessage(f"Abandoned changes to {self.member.label}", 4000)
+
+    def _update_modified_indicator(self, modified):
+        item = self.members.currentItem()
+        if item is None:
+            return
+        item.setForeground(QColor("#ffd166") if modified else QColor("#e6e6e6"))
+        font = item.font()
+        font.setBold(modified)
+        item.setFont(font)
+        base = self.member.tooltip or self.member.label if self.member else item.text()
+        item.setToolTip(("Unsaved changes\n" + base) if modified else base)
+
+    def _restore_current_browser_selection(self):
+        if not self.doc or not self.member:
+            return
+        scope_index = next((i for i, scope in enumerate(self.doc.scopes) if scope.name == self.member.scope), -1)
+        if scope_index >= 0:
+            blocker = QSignalBlocker(self.scopes)
+            self.scopes.setCurrentRow(scope_index)
+            del blocker
+            self.scope = self.doc.scopes[scope_index]
+        category_items = self.categories.findItems(self.member.category, Qt.MatchFlag.MatchExactly)
+        if category_items:
+            blocker = QSignalBlocker(self.categories)
+            self.categories.setCurrentItem(category_items[0])
+            del blocker
+        visible = self._visible()
+        member_index = next((i for i, member in enumerate(visible) if member == self.member), -1)
+        if member_index >= 0:
+            blocker = QSignalBlocker(self.members)
+            self.members.setCurrentRow(member_index)
+            del blocker
 
     def choose(self):
         name, _ = QFileDialog.getOpenFileName(self, "Open Python File", "", "Python files (*.py)")
@@ -552,6 +617,7 @@ class MainWindow(QMainWindow):
             self.editor.clear()
         self.loading = False
         self.setWindowModified(False)
+        self._update_modified_indicator(False)
         if self.find_text.text() and self.current_entity_only.isChecked():
             self.execute_find()
 
@@ -568,6 +634,7 @@ class MainWindow(QMainWindow):
             self._open_module(self.doc.path, location[1:])
             self.editor.document().setModified(False)
             self.setWindowModified(False)
+            self._update_modified_indicator(False)
             self.statusBar().showMessage("Saved", 5000)
         except ParseError as exc:
             QMessageBox.critical(self, "Syntax error", f"{exc}\n\nLine: {exc.line or '?'}  Column: {exc.column or '?'}")
