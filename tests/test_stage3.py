@@ -67,13 +67,12 @@ def test_nested_classes_and_decorator_labels():
     assert any("[staticmethod]" in label for label in labels)
     assert any(m.category == "Class Variables" for m in real(outer))
 
-def test_category_level_member_for_contiguous_run():
+def test_categories_contain_only_real_members():
     source = "# category: Config\nA = 1\n# category: Config\nB = 2\n"
     scope = build_index(Path("example.py"), source)[0]
-    assert scope.members[0].label == "-- entire category --"
-    assert scope.members[0].synthetic
-    assert scope.members[0].span.start == source.index("A = 1")
-    assert scope.members[0].span.end == len(source)
+    assert [member.label for member in scope.members] == ["A", "B"]
+    assert not any(member.synthetic for member in scope.members)
+
 
 def test_every_direct_statement_appears_once_excluding_synthetic():
     scopes = build_index(Path("example.py"), SOURCE)

@@ -71,3 +71,24 @@ def test_large_world_results_are_batched_and_tree_lookup_is_constant_time():
     update = main[main.index("    def _update_module_tree_item"):main.index("    def _recent_worlds", main.index("    def _update_module_tree_item"))]
     assert "self.module_tree_items.get(target)" in update
     assert "while queue" not in update
+
+
+def test_member_order_controls_and_sorting_are_present():
+    source = Path("pybrowser/main_window.py").read_text()
+    assert 'QRadioButton("File")' in source
+    assert 'QRadioButton("Sort")' in source
+    assert 'visible.sort(key=lambda item: item.label.casefold())' in source
+
+
+def test_editor_supports_keyboard_and_wheel_zoom():
+    source = Path("pybrowser/widgets/editor.py").read_text()
+    assert "def change_font_size" in source
+    assert "Qt.Key.Key_Equal" in source
+    assert "Qt.Key.Key_Minus" in source
+    assert "def wheelEvent" in source
+
+
+def test_category_drag_target_has_explicit_highlight():
+    source = Path("pybrowser/widgets/browser_lists.py").read_text()
+    assert '#2f78c4' in source
+    assert 'def _set_drop_target' in source

@@ -2,7 +2,7 @@ from pathlib import Path
 from PySide6.QtCore import QFileSystemWatcher, QPoint, QSettings, QSignalBlocker, QThreadPool, QTimer, Qt
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
-    QCheckBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
+    QButtonGroup, QCheckBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QRadioButton,
     QMainWindow, QMenu, QMessageBox, QSplitter, QStatusBar, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
@@ -173,14 +173,27 @@ class MainWindow(QMainWindow):
         self.current_member_only.setChecked(True)
         self.current_member_only.toggled.connect(self._search_scope_changed)
         self.match_indicator = QLabel("0 matches")
-        self.match_indicator.setMinimumWidth(90)
+        self.match_indicator.setMinimumWidth(72)
+        self.find_text.setMaximumWidth(360)
+        self.order_file = QRadioButton("File")
+        self.order_sort = QRadioButton("Sort")
+        self.order_file.setChecked(True)
+        self.order_group = QButtonGroup(self)
+        self.order_group.addButton(self.order_file)
+        self.order_group.addButton(self.order_sort)
+        self.order_file.toggled.connect(self._member_order_changed)
         find_bar = QWidget()
         find_layout = QHBoxLayout(find_bar)
-        find_layout.setContentsMargins(6, 4, 6, 4)
+        find_layout.setContentsMargins(6, 2, 6, 2)
+        find_layout.setSpacing(5)
         find_layout.addWidget(QLabel("Find:"))
-        find_layout.addWidget(self.find_text, 1)
+        find_layout.addWidget(self.find_text)
         find_layout.addWidget(self.current_member_only)
         find_layout.addWidget(self.match_indicator)
+        find_layout.addStretch(1)
+        find_layout.addWidget(QLabel("Order:"))
+        find_layout.addWidget(self.order_file)
+        find_layout.addWidget(self.order_sort)
 
         self.crumb = QLabel("Open a Python file to begin")
         self.editor = Editor()
@@ -1072,8 +1085,28 @@ class MainWindow(QMainWindow):
         if self.members.count():
             self.members.setCurrentRow(0)
 
-    def _populate_members(self, category):
+    def _ordered_members(self, category=None):
+        category = self._raw_category() if category is None else category
         visible = [item for item in self.scope.members if item.category == category] if self.scope else []
+        if hasattr(self, "order_sort") and self.order_sort.isChecked():
+            visible.sort(key=lambda item: item.label.casefold())
+        return visible
+
+    def _member_order_changed(self, _checked=False):
+        if not self.scope or self.loading:
+            return
+        current = self.member
+        category = self._raw_category()
+        self._populate_members(category)
+        visible = self._visible()
+        row = next((index for index, item in enumerate(visible) if item == current), 0 if visible else -1)
+        with QSignalBlocker(self.members):
+            self.members.setCurrentRow(row)
+        self.member = visible[row] if 0 <= row < len(visible) else None
+        self._load_member(self.member)
+
+    def _populate_members(self, category):
+        visible = self._ordered_members(category)
         callable_names = [callable_name_from_label(item.label) for item in visible if not item.synthetic and item.kind.value in {"function", "method"}]
         duplicate_names = {name for name in callable_names if callable_names.count(name) > 1}
         with QSignalBlocker(self.members):
@@ -1088,10 +1121,9 @@ class MainWindow(QMainWindow):
                     item.setForeground(QColor("#dca8ac"))
                     item.setToolTip("Duplicate definition in this scope\n" + (member.tooltip or member.label))
 
-
     def _visible(self):
-        category = self._raw_category()
-        return [item for item in self.scope.members if item.category == category] if self.scope else []
+        return self._ordered_members()
+
 
     def _member(self, row):
         items = self._visible()

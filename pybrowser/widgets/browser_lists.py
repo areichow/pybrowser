@@ -1,7 +1,9 @@
-from PySide6.QtCore import QByteArray, QDataStream, QIODevice, Qt, Signal
+from PySide6.QtCore import QByteArray, Qt, Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import QListWidget
 
 MIME = "application/x-pybrowser-member"
+DROP_ROLE = Qt.ItemDataRole.UserRole + 20
 
 
 class MemberListWidget(QListWidget):
@@ -25,20 +27,48 @@ class CategoryListWidget(QListWidget):
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setDragDropMode(self.DragDropMode.DropOnly)
+        self._drop_target = None
+
+    def _set_drop_target(self, item):
+        if item is self._drop_target:
+            return
+        if self._drop_target is not None:
+            original = self._drop_target.data(DROP_ROLE)
+            self._drop_target.setBackground(original if original is not None else QBrush())
+            self._drop_target.setData(DROP_ROLE, None)
+        self._drop_target = item
+        if item is not None:
+            item.setData(DROP_ROLE, item.background())
+            item.setBackground(QBrush(QColor("#2f78c4")))
+        self.viewport().update()
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasFormat(MIME): event.acceptProposedAction()
-        else: super().dragEnterEvent(event)
+        if event.mimeData().hasFormat(MIME):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event):
-        if event.mimeData().hasFormat(MIME): event.acceptProposedAction()
-        else: super().dragMoveEvent(event)
+        if event.mimeData().hasFormat(MIME):
+            self._set_drop_target(self.itemAt(event.position().toPoint()))
+            event.acceptProposedAction()
+        else:
+            self._set_drop_target(None)
+            super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event):
+        self._set_drop_target(None)
+        super().dragLeaveEvent(event)
 
     def dropEvent(self, event):
         item = self.itemAt(event.position().toPoint())
-        if item is None:
+        try:
+            row = int(bytes(event.mimeData().data(MIME)).decode("ascii"))
+        except ValueError:
+            self._set_drop_target(None)
             return
-        try: row = int(bytes(event.mimeData().data(MIME)).decode("ascii"))
-        except ValueError: return
-        self.member_dropped.emit(row, item.data(Qt.ItemDataRole.UserRole + 2) or item.text())
-        event.acceptProposedAction()
+        if item is not None:
+            category = item.data(Qt.ItemDataRole.UserRole + 2) or item.text()
+            self.member_dropped.emit(row, category)
+            event.acceptProposedAction()
+        self._set_drop_target(None)

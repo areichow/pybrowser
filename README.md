@@ -269,3 +269,14 @@ Exception aliases from `except Exception as error:` are registered as local exce
 Native semantic analysis now predeclares the complete module namespace before analyzing function and method bodies. Classes, functions, imports, and assignment targets defined later in the same file are valid globals and no longer produce `possibly-undefined-local` hints. This covers constructor calls such as `RepoLock(...)` before `class RepoLock`, calls to a later `diagnostic()` function, and calls from `diagnostic()` to a later `colorize()` function.
 
 File View now provides `Ctrl+F` Find, `Ctrl+G` Find Next, `Ctrl+H` Replace, and `Ctrl+Shift+G` Go to Line. Find supports match case, whole-word matching, backward search, and wrap-around behavior. **Find All in Current File** opens a results panel below the editor with line, column, and source preview; selecting a result moves the File View editor to that match. Replace supports Replace and Replace All using the same literal, case, and whole-word rules.
+
+
+## Revision 11.8 editor zoom, Member ordering, and drag clarity
+
+Code editors now support `Ctrl+=` or `Ctrl++` to increase font size, `Ctrl+-` to decrease it, and `Ctrl+mouse wheel` to zoom. The range is 6 through 48 points, and the selected size is persisted in `QSettings` as the shared editor font size. This applies to the Browser code pane, File View, and editable query windows because all use the shared `Editor` widget.
+
+The compact Find row now includes **Order: File / Sort**. **File** preserves source order. **Sort** presents the current Category's Members alphabetically using case-insensitive labels while retaining the underlying source locations and drag/drop identity. Changing order keeps the selected Member selected.
+
+The synthetic `-- entire category --` Member has been removed. File View is now the supported way to inspect or edit multiple Members together, which avoids a second overlapping structural editing model and keeps Member lists limited to real source constructs.
+
+During a Member drag, the Category under the pointer receives a bright blue `#2f78c4` background. The highlight follows the pointer and is cleared on drop or drag leave.

@@ -8,7 +8,7 @@ import libcst as cst
 from libcst.metadata import MetadataWrapper, PositionProvider
 from .model import Document, Kind, Member, Scope, Span
 from .saving import file_signature
-from .conventions import canonical_category, ENTIRE_CATEGORY_DISPLAY
+from .conventions import canonical_category
 
 CATEGORY_RE = re.compile(r"^[ \t]*#[ \t]*category[ \t]*:[ \t]*(?P<name>[^\r\n#]+?)[ \t]*$", re.I)
 
@@ -179,25 +179,9 @@ def _group_imports(items: list[Member], text: str) -> list[Member]:
     return grouped
 
 def _add_category_members(items: list[Member]) -> tuple[Member, ...]:
-    if not items:
-        return ()
-    result: list[Member] = []
-    run: list[Member] = []
-    def flush() -> None:
-        if not run:
-            return
-        first, last = run[0], run[-1]
-        if len(run) > 1:
-            span = Span(first.span.start, last.span.end, first.span.first, last.span.last)
-            result.append(Member(first.scope, first.category, ENTIRE_CATEGORY_DISPLAY, Kind.CATEGORY, span, True, f"Edit {len(run)} contiguous members together"))
-        result.extend(run)
-        run.clear()
-    for item in items:
-        if run and item.category != run[-1].category:
-            flush()
-        run.append(item)
-    flush()
-    return tuple(result)
+    """Return real Members only; whole-category editing belongs in File View."""
+    return tuple(items)
+
 
 def _walk_class(text, node, qualified_name, positions, starts, scopes, parent=None):
     items: list[Member] = []

@@ -21,7 +21,6 @@ SPECIAL_CATEGORY_ORDER = {
 
 MODULE_SCOPE = "<module>"
 MODULE_SCOPE_DISPLAY = "-- module --"
-ENTIRE_CATEGORY_DISPLAY = "-- entire category --"
 
 
 def canonical_category(name: str) -> str:

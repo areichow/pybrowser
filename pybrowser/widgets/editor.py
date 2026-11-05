@@ -74,6 +74,29 @@ class Editor(QPlainTextEdit):
         self.update_line_number_area_width()
         self.highlighter = PythonHighlighter(self.document())
 
+    def change_font_size(self, delta):
+        font = self.font()
+        current = font.pointSize()
+        if current <= 0:
+            current = 11
+        size = max(6, min(48, current + int(delta)))
+        if size == current:
+            return
+        font.setPointSize(size)
+        self.setFont(font)
+        QSettings("PyBrowser", "PyBrowser").setValue("editor/fontSize", size)
+        self.set_tab_width(self.tab_width)
+        self.update_line_number_area_width()
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta:
+                self.change_font_size(1 if delta > 0 else -1)
+                event.accept()
+                return
+        super().wheelEvent(event)
+
     def set_tab_width(self, width):
         self.tab_width = max(1, int(width))
         self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * self.tab_width)
@@ -124,6 +147,12 @@ class Editor(QPlainTextEdit):
             top += height
 
     def keyPressEvent(self, event: QKeyEvent):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() in (Qt.Key.Key_Equal, Qt.Key.Key_Plus):
+            self.change_font_size(1)
+            return
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_Minus:
+            self.change_font_size(-1)
+            return
         if event.key() == Qt.Key.Key_B and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             cursor = self.textCursor()
             value = cursor.selectedText().strip()
