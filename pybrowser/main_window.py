@@ -1,6 +1,6 @@
 from pathlib import Path
 from PySide6.QtCore import QFileSystemWatcher, QPoint, QSettings, QSignalBlocker, QThreadPool, QTimer, Qt
-from PySide6.QtGui import QAction, QColor, QKeySequence, QTextCursor
+from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
     QMainWindow, QMenu, QMessageBox, QSplitter, QStatusBar, QTreeWidget, QTreeWidgetItem,
@@ -23,6 +23,9 @@ from threading import Event
 from .saving import atomic_write, changed
 from .search import SearchMatch, find_all
 from .widgets.editor import Editor
+from .widgets.preferences_dialog import PreferencesDialog
+from .widgets.replace_dialog import ReplaceDialog
+from .theme import apply_theme
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
 from PySide6.QtWidgets import QTextEdit
@@ -58,10 +61,13 @@ class MainWindow(QMainWindow):
         self.search_matches: tuple[SearchMatch, ...] = ()
         self.search_index = -1
         self.search_source = ""
+        self.replace_dialog = None
         self.resize(1400, 900)
         self.setWindowTitle("PyBrowser")
         self._ui()
         self._actions()
+        self._restore_window_state()
+        self._apply_editor_preferences()
         if path:
             self.open(path)
 
@@ -142,6 +148,14 @@ class MainWindow(QMainWindow):
         next_action = QAction("Find Next", self)
         next_action.setShortcut("Ctrl+G")
         next_action.triggered.connect(self.find_next)
+        replace_action = QAction("Replace in Current Entity", self)
+        replace_action.setShortcut("Ctrl+H")
+        replace_action.triggered.connect(self.show_replace_dialog)
+        comment_action = QAction("Toggle Comment", self)
+        comment_action.setShortcut("Ctrl+/")
+        comment_action.triggered.connect(self.editor.toggle_comment)
+        preferences_action = QAction("Preferences...", self)
+        preferences_action.triggered.connect(self.show_preferences)
         abandon_action = QAction("Abandon Entity Changes", self)
         abandon_action.setShortcut("Ctrl+L")
         abandon_action.triggered.connect(self.abandon_changes)
@@ -170,9 +184,11 @@ class MainWindow(QMainWindow):
         self.recent_menu = file_menu.addMenu("Recent Worlds")
         self._rebuild_recent_menu()
         edit_menu = self.menuBar().addMenu("&Edit")
-        edit_menu.addActions([find_action, next_action, project_find_action])
+        edit_menu.addActions([find_action, next_action, replace_action, project_find_action, comment_action])
         edit_menu.addSeparator()
         edit_menu.addAction(abandon_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(preferences_action)
         structure_menu = self.menuBar().addMenu("&Structure")
         commands = [
             ("New Function...", self.new_function), ("New Class...", self.new_class),
@@ -194,7 +210,88 @@ class MainWindow(QMainWindow):
         init_action.triggered.connect(self.create_init_file)
         navigate_menu = self.menuBar().addMenu("&Navigate")
         navigate_menu.addActions([quick_module_action, quick_symbol_action, back_action, forward_action, goto_action])
-        self.addActions([open_action, save_action, find_action, next_action, abandon_action, quick_module_action, quick_symbol_action, project_find_action, back_action, forward_action, goto_action])
+        self.addActions([open_action, save_action, find_action, next_action, replace_action, abandon_action, quick_module_action, quick_symbol_action, project_find_action, back_action, forward_action, goto_action])
+
+    def _preferences(self):
+        return {
+            "font_family": self.settings.value("editor/fontFamily", "0xProto Nerd Font", str),
+            "font_size": self.settings.value("editor/fontSize", 11, int),
+            "tab_width": self.settings.value("editor/tabWidth", 4, int),
+            "show_whitespace": self.settings.value("editor/showWhitespace", False, bool),
+            "theme": self.settings.value("appearance/theme", "dark", str),
+        }
+
+    def _apply_editor_preferences(self):
+        values = self._preferences()
+        font = QFont(values["font_family"], values["font_size"])
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        font.setFixedPitch(True)
+        for editor in self.findChildren(Editor):
+            editor.setFont(font)
+            editor.set_tab_width(values["tab_width"])
+            editor.set_show_whitespace(values["show_whitespace"])
+        apply_theme(self.window().windowHandle().screen().context().application() if False else __import__("PySide6.QtWidgets", fromlist=["QApplication"]).QApplication.instance(), values["theme"])
+
+    def show_preferences(self):
+        dialog = PreferencesDialog(self._preferences(), self)
+        if not dialog.exec():
+            return
+        values = dialog.values()
+        self.settings.setValue("editor/fontFamily", values["font_family"])
+        self.settings.setValue("editor/fontSize", values["font_size"])
+        self.settings.setValue("editor/tabWidth", values["tab_width"])
+        self.settings.setValue("editor/showWhitespace", values["show_whitespace"])
+        self.settings.setValue("appearance/theme", values["theme"])
+        self._apply_editor_preferences()
+
+    def show_replace_dialog(self):
+        selected = self.editor.textCursor().selectedText()
+        self.replace_dialog = ReplaceDialog(self, selected)
+        self.replace_dialog.replace_one.connect(self._replace_one)
+        self.replace_dialog.replace_all.connect(self._replace_all)
+        self.replace_dialog.show()
+
+    def _replace_one(self, find_text, replacement_text, case_sensitive):
+        if not find_text:
+            return
+        source = self.editor.toPlainText()
+        cursor = self.editor.textCursor()
+        start = cursor.selectionStart() if cursor.hasSelection() else cursor.position()
+        haystack = source if case_sensitive else source.casefold()
+        needle = find_text if case_sensitive else find_text.casefold()
+        position = haystack.find(needle, start)
+        if position < 0:
+            position = haystack.find(needle, 0, start)
+        if position < 0:
+            self.replace_dialog.status.setText("No matches")
+            return
+        cursor.setPosition(position)
+        cursor.setPosition(position + len(find_text), QTextCursor.MoveMode.KeepAnchor)
+        cursor.insertText(replacement_text)
+        self.editor.setTextCursor(cursor)
+        self.replace_dialog.status.setText("Replaced one match")
+
+    def _replace_all(self, find_text, replacement_text, case_sensitive):
+        if not find_text:
+            return
+        source = self.editor.toPlainText()
+        if case_sensitive:
+            count = source.count(find_text)
+            result = source.replace(find_text, replacement_text)
+        else:
+            result, count = __import__("re").subn(__import__("re").escape(find_text), lambda _m: replacement_text, source, flags=__import__("re").IGNORECASE)
+        if count:
+            cursor = self.editor.textCursor()
+            cursor.beginEditBlock()
+            self.editor.setPlainText(result)
+            cursor.endEditBlock()
+            self.editor.document().setModified(True)
+        self.replace_dialog.status.setText(f"Replaced {count} match(es)")
+
+    def _restore_window_state(self):
+        geometry = self.settings.value("window/geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
 
     def focus_find(self):
         self.find_text.setFocus()
@@ -205,6 +302,7 @@ class MainWindow(QMainWindow):
         self.search_matches = ()
         self.search_index = -1
         self.search_source = ""
+        self.replace_dialog = None
         self._update_match_indicator()
 
     def _search_scope_changed(self):
@@ -227,6 +325,7 @@ class MainWindow(QMainWindow):
         else:
             self.search_matches = ()
             self.search_source = ""
+        self.replace_dialog = None
         self.search_index = 0 if self.search_matches else -1
         self._show_search_match()
 
@@ -1051,6 +1150,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self._confirm_discard():
             self.index_cancelled.set()
+            self.settings.setValue("window/geometry", self.saveGeometry())
             event.accept()
         else:
             event.ignore()
