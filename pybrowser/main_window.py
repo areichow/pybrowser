@@ -2,7 +2,7 @@ from pathlib import Path
 from PySide6.QtCore import QFileSystemWatcher, QSettings, QSignalBlocker, QThreadPool, QTimer, Qt
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
-    QCheckBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QCheckBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
     QMainWindow, QMenu, QMessageBox, QSplitter, QStatusBar, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
@@ -10,6 +10,10 @@ from .parser import ParseError, read_document, replacement, validate
 from .project import ModuleEntry, World, open_world
 from .index_cache import ModuleIndexCache
 from .indexing import IndexSignals, IndexWorldTask, ModuleIndexResult
+from .structural import (
+    StructuralEditError, add_class, add_function, add_method, convert_method_kind,
+    create_package_init, delete_member, duplicate_member, move_member, rename_category,
+)
 from threading import Event
 from .saving import atomic_write, changed
 from .search import SearchMatch, find_all
@@ -140,6 +144,25 @@ class MainWindow(QMainWindow):
         edit_menu.addActions([find_action, next_action])
         edit_menu.addSeparator()
         edit_menu.addAction(abandon_action)
+        structure_menu = self.menuBar().addMenu("&Structure")
+        commands = [
+            ("New Function...", self.new_function), ("New Class...", self.new_class),
+            ("New Method...", self.new_method), ("New Category...", self.new_category),
+            ("Rename Category...", self.rename_current_category),
+            ("Move Entity to Category...", self.move_current_member),
+            ("Duplicate Entity", self.duplicate_current_member),
+            ("Delete Entity...", self.delete_current_member),
+        ]
+        for title, callback in commands:
+            action = structure_menu.addAction(title)
+            action.triggered.connect(callback)
+        kind_menu = structure_menu.addMenu("Convert Method Kind")
+        for title, kind in (("Instance Method", "instance"), ("Static Method", "static"), ("Class Method", "class"), ("Property", "property")):
+            action = kind_menu.addAction(title)
+            action.triggered.connect(lambda checked=False, value=kind: self.convert_current_method(value))
+        structure_menu.addSeparator()
+        init_action = structure_menu.addAction("Create Package __init__.py")
+        init_action.triggered.connect(self.create_init_file)
         self.addActions([open_action, save_action, find_action, next_action, abandon_action])
 
     def focus_find(self):
@@ -620,6 +643,136 @@ class MainWindow(QMainWindow):
         self._update_modified_indicator(False)
         if self.find_text.text() and self.current_entity_only.isChecked():
             self.execute_find()
+
+    def _apply_structural_edit(self, edit, description):
+        if not self.doc:
+            return
+        if self.editor.document().isModified() and not self._confirm_discard():
+            return
+        try:
+            validate(edit.text, str(self.doc.path))
+            if changed(self.doc):
+                raise StructuralEditError("The module changed on disk; reload it before structural editing")
+            atomic_write(self.doc, edit.text)
+            self.index_cache.put(self.doc.path, None)
+            self._open_module(self.doc.path)
+            self._select_structural_result(edit.scope, edit.category, edit.preferred_name)
+            self.statusBar().showMessage(description, 5000)
+        except (OSError, ParseError, StructuralEditError) as exc:
+            QMessageBox.critical(self, "Structural edit failed", str(exc))
+
+    def _select_structural_result(self, scope, category, preferred_name):
+        for index, item in enumerate(self.doc.scopes):
+            if item.name == scope:
+                self.scopes.setCurrentRow(index)
+                break
+        categories = self.categories.findItems(category, Qt.MatchFlag.MatchExactly)
+        if categories:
+            self.categories.setCurrentItem(categories[0])
+        if preferred_name:
+            for index, member in enumerate(self._visible()):
+                if member.label.startswith(preferred_name):
+                    self.members.setCurrentRow(index)
+                    break
+
+    def new_function(self):
+        if not self.doc:
+            return
+        name, ok = QInputDialog.getText(self, "New Function", "Function name:")
+        if not ok:
+            return
+        category, ok = QInputDialog.getText(self, "New Function", "Category:", text="Functions")
+        if ok:
+            try: self._apply_structural_edit(add_function(self.doc, name, category), f"Added function {name}")
+            except StructuralEditError as exc: QMessageBox.warning(self, "Invalid function", str(exc))
+
+    def new_class(self):
+        if not self.doc:
+            return
+        name, ok = QInputDialog.getText(self, "New Class", "Class name:")
+        if not ok:
+            return
+        category, ok = QInputDialog.getText(self, "New Class", "Category:", text="Classes")
+        if ok:
+            try: self._apply_structural_edit(add_class(self.doc, name, category), f"Added class {name}")
+            except StructuralEditError as exc: QMessageBox.warning(self, "Invalid class", str(exc))
+
+    def new_method(self):
+        if not self.doc or not self.scope:
+            return
+        name, ok = QInputDialog.getText(self, "New Method", "Method name:")
+        if not ok:
+            return
+        default = self.categories.currentItem().text() if self.categories.currentItem() else "Uncategorized"
+        category, ok = QInputDialog.getText(self, "New Method", "Category:", text=default)
+        if not ok:
+            return
+        kinds = ["instance", "static", "class", "property"] if self.scope.name != "<module>" else ["function"]
+        kind, ok = QInputDialog.getItem(self, "New Method", "Kind:", kinds, 0, False)
+        if ok:
+            try: self._apply_structural_edit(add_method(self.doc, self.scope.name, name, category, kind), f"Added {kind} {name}")
+            except StructuralEditError as exc: QMessageBox.warning(self, "Invalid method", str(exc))
+
+    def new_category(self):
+        if not self.doc or not self.scope:
+            return
+        category, ok = QInputDialog.getText(self, "New Category", "Category name:")
+        if ok and category.strip():
+            QMessageBox.information(self, "New Category", "A category becomes part of Python source when its first member is added. Use New Method or Move Entity to Category and enter this category name.")
+
+    def rename_current_category(self):
+        if not self.doc or not self.categories.currentItem():
+            return
+        old = self.categories.currentItem().text()
+        new, ok = QInputDialog.getText(self, "Rename Category", "New category name:", text=old)
+        if ok:
+            try: self._apply_structural_edit(rename_category(self.doc, old, new, self.scope.name), f"Renamed {old} to {new}")
+            except StructuralEditError as exc: QMessageBox.warning(self, "Cannot rename category", str(exc))
+
+    def move_current_member(self):
+        if not self.doc or not self.member:
+            return
+        category, ok = QInputDialog.getText(self, "Move Entity", "Destination category:", text=self.member.category)
+        if ok:
+            try: self._apply_structural_edit(move_member(self.doc, self.member, category), f"Moved entity to {category}")
+            except StructuralEditError as exc: QMessageBox.warning(self, "Cannot move entity", str(exc))
+
+    def duplicate_current_member(self):
+        if self.doc and self.member:
+            try: self._apply_structural_edit(duplicate_member(self.doc, self.member), "Duplicated entity")
+            except StructuralEditError as exc: QMessageBox.warning(self, "Cannot duplicate entity", str(exc))
+
+    def delete_current_member(self):
+        if not self.doc or not self.member:
+            return
+        answer = QMessageBox.question(self, "Delete Entity", f"Delete {self.member.label}? This writes immediately to disk.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if answer == QMessageBox.StandardButton.Yes:
+            try: self._apply_structural_edit(delete_member(self.doc, self.member), f"Deleted {self.member.label}")
+            except StructuralEditError as exc: QMessageBox.warning(self, "Cannot delete entity", str(exc))
+
+    def convert_current_method(self, kind):
+        if self.doc and self.member:
+            try: self._apply_structural_edit(convert_method_kind(self.doc, self.member, kind), f"Converted method to {kind}")
+            except StructuralEditError as exc: QMessageBox.warning(self, "Cannot convert method", str(exc))
+
+    def create_init_file(self):
+        if not self.world or self.world.single_file:
+            QMessageBox.information(self, "Create Package", "Open a directory world first.")
+            return
+        directory = QFileDialog.getExistingDirectory(self, "Select Package Directory", str(self.world.root))
+        if not directory:
+            return
+        path = Path(directory).resolve()
+        if self.world.root not in (path, *path.parents):
+            QMessageBox.warning(self, "Invalid package directory", "Choose a directory inside the current world.")
+            return
+        try:
+            created = create_package_init(path)
+            self._refresh_world()
+            self._select_module_path(created)
+            self.statusBar().showMessage(f"Created {created}", 5000)
+        except (OSError, StructuralEditError) as exc:
+            QMessageBox.critical(self, "Cannot create __init__.py", str(exc))
 
     def save(self):
         if not self.doc or not self.member:
