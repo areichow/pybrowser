@@ -92,3 +92,14 @@ def test_category_drag_target_has_explicit_highlight():
     source = Path("pybrowser/widgets/browser_lists.py").read_text()
     assert '#2f78c4' in source
     assert 'def _set_drop_target' in source
+
+
+def test_all_editor_write_paths_use_recovery_journal():
+    main = Path("pybrowser/main_window.py").read_text()
+    file_view = Path("pybrowser/widgets/file_view.py").read_text()
+    query = Path("pybrowser/widgets/code_query_dialog.py").read_text()
+    assert 'operation="save_member"' in main
+    assert "_structural_operation" in main
+    assert 'operation="save_file"' in file_view
+    assert 'operation="save_member"' in query
+    assert "journaled_atomic_write" in main + file_view + query

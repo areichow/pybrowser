@@ -173,3 +173,8 @@ PyBrowser should never automatically commit, reset, checkout, stash, or amend Gi
 - Snapshot compression or content-addressed blobs if storage measurements justify it
 
 A full LSP client remains a possible later feature, but it is intentionally deferred. Native AST/symbol-table analysis and optional batch BasedPyright/Pyright diagnostics remain the current semantic strategy.
+
+
+### Deferred write / image-style commit mode
+
+A future phase will add a preference choosing between **Write through immediately** and **Stage in journal until commit**. Staged mode requires a World overlay filesystem so every Browser, File View, semantic index, type check, query, and runtime launch reads the staged after-snapshot rather than stale disk content. Planned File commands are **Commit All Changes** and **Commit Changes...**, with the latter presenting a transaction/file summary and allowing selective commits. Quit and World switching must prompt to commit, retain staged changes, or discard them. This is intentionally deferred until the shared `SourceWriteService` and virtual World overlay are implemented; merely skipping `os.replace()` in the current architecture would cause indexers and other windows to read inconsistent source.

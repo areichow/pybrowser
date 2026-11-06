@@ -1,6 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, QSettings
+from .recovery import RecoveryJournal
 from PySide6.QtWidgets import QApplication
 
 
@@ -15,9 +16,17 @@ class Workspace(QObject):
         self.world = world
         self.windows = []
         self.active_browser = None
+        self.journal = None
 
     def set_world(self, world):
         self.world = world
+        settings = QSettings("PyBrowser", "PyBrowser")
+        self.journal = RecoveryJournal(
+            world.root,
+            max_transactions=settings.value("recovery/maxTransactions", 200, int),
+            min_days=settings.value("recovery/minDays", 30, int),
+            max_megabytes=settings.value("recovery/maxMegabytes", 500, int),
+        )
         self.world_changed.emit(world)
 
     def announce_file_changed(self, path: Path, origin=None):

@@ -294,3 +294,12 @@ Native semantic analysis now recognizes the names supplied by Python's module ex
 The Browser Member editor and editable query windows now display class and nested-class Members at column zero through a reversible `MemberProjection`. PyBrowser records the exact source prefix, removes only that prefix from each non-empty displayed line, and reapplies it before the existing full-module LibCST/AST validation and atomic save. Module-level Members remain unchanged because their prefix is empty. Decorators, async definitions, multiline signatures, nested functions, continuation indentation, tabs, CRLF, blank lines, encoding, and unrelated source remain intact.
 
 **Edit > Preferences > Dedent Member editor** controls the behavior and defaults on. A Member whose non-empty lines do not share the exact structural prefix is treated as unsafe and shown literally rather than guessed. File View remains a literal whole-file editor and is never projected.
+
+
+## Revision 12.0 recovery journal
+
+Every source write now creates a durable recovery transaction in the platform user-data directory. Member saves, File View saves, query-window saves, structural edits, and package `__init__.py` creation capture full before and after snapshots plus a JSON manifest that progresses through `prepared`, `committing`, and `committed`. The manifest records hashes, encoding, newline mode, file permissions, operation name, description, World root, and Browser location where available.
+
+**File > Structural History...** (`Ctrl+Shift+H`) opens a modeless history window with newest-first transactions, status, disk-state comparison, hashes, a unified diff, pin/unpin controls, and **Restore Before As...** / **Restore After As...**. Opening a World scans for interrupted `prepared` or `committing` transactions and offers to open Structural History. Preferences control transaction count, minimum retention days, and maximum storage in MB. Pinned and incomplete transactions are never pruned automatically.
+
+Image-style deferred disk commits are documented in `UNDO_PLAN.md` but intentionally deferred until a World overlay and consolidated `SourceWriteService` exist. Immediate writes remain the only mode in Revision 12.0.

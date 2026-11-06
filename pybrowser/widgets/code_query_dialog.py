@@ -4,7 +4,8 @@ from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QLabel, QListWidget, QMainWindow, QMessageBox, QSplitter, QVBoxLayout, QWidget
 from .editor import Editor
 from ..parser import ParseError, read_document, replacement, validate
-from ..saving import atomic_write, changed
+from ..saving import changed
+from ..recovery import journaled_atomic_write
 from ..windowing import install_window_commands
 from ..member_projection import MemberProjection, project_member, restore_member
 
@@ -89,7 +90,7 @@ class CodeQueryDialog(QMainWindow):
         restored_source = restore_member(self.member_projection, self.preview.toPlainText())
         candidate = replacement(self.current_document, self.current_member, restored_source)
         try:
-            validate(candidate, str(self.current_document.path)); atomic_write(self.current_document, candidate)
+            validate(candidate, str(self.current_document.path)); journaled_atomic_write(self.current_document, candidate, self.workspace.journal, operation="save_member", description=f"Save query Member {self.current_member.label}")
             self.current_document = read_document(self.current_document.path)
             self.preview.document().setModified(False)
             self.workspace.announce_file_changed(self.current_document.path, self)

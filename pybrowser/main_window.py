@@ -40,6 +40,8 @@ from .semantic import analyze_source
 from .semantic_queries import references_in_world
 from .diagnostic_aggregation import DiagnosticAggregation, decorate
 from .member_projection import MemberProjection, project_member, restore_member
+from .recovery import journaled_atomic_write, journaled_create_file
+from .widgets.structural_history import StructuralHistoryWindow
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
 from PySide6.QtWidgets import QTextEdit
@@ -292,6 +294,10 @@ class MainWindow(QMainWindow):
         focus_crumb_action.setShortcut("Ctrl+Alt+L")
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addActions([open_action, folder_action, save_action])
+        history_action = QAction("Structural History...", self)
+        history_action.setShortcut("Ctrl+Shift+H")
+        history_action.triggered.connect(self.show_structural_history)
+        file_menu.addAction(history_action)
         self.recent_menu = file_menu.addMenu("Recent Worlds")
         self._rebuild_recent_menu()
         edit_menu = self.menuBar().addMenu("&Edit")
@@ -394,6 +400,9 @@ class MainWindow(QMainWindow):
             "show_whitespace": self.settings.value("editor/showWhitespace", False, bool),
             "theme": self.settings.value("appearance/theme", "dark", str),
             "dedent_members": self.settings.value("editor/dedentMembers", True, bool),
+            "recovery_max_transactions": self.settings.value("recovery/maxTransactions", 200, int),
+            "recovery_min_days": self.settings.value("recovery/minDays", 30, int),
+            "recovery_max_megabytes": self.settings.value("recovery/maxMegabytes", 500, int),
         }
 
     def _apply_editor_preferences(self):
@@ -418,6 +427,14 @@ class MainWindow(QMainWindow):
         self.settings.setValue("editor/showWhitespace", values["show_whitespace"])
         self.settings.setValue("appearance/theme", values["theme"])
         self.settings.setValue("editor/dedentMembers", values["dedent_members"])
+        self.settings.setValue("recovery/maxTransactions", values["recovery_max_transactions"])
+        self.settings.setValue("recovery/minDays", values["recovery_min_days"])
+        self.settings.setValue("recovery/maxMegabytes", values["recovery_max_megabytes"])
+        if self.workspace.journal:
+            self.workspace.journal.max_transactions = values["recovery_max_transactions"]
+            self.workspace.journal.min_days = values["recovery_min_days"]
+            self.workspace.journal.max_bytes = values["recovery_max_megabytes"] * 1024 * 1024
+            self.workspace.journal.prune()
         self._apply_editor_preferences()
         if self.member and not self.editor.document().isModified():
             self._load_member(self.member)
@@ -776,6 +793,7 @@ class MainWindow(QMainWindow):
             title = world.modules[0].path.name if world.single_file else world.root.name
             self.setWindowTitle(title + "[*] - PyBrowser")
             self.statusBar().showMessage(f"Opened {len(world.modules)} Python module(s)", 5000)
+            QTimer.singleShot(0, self._check_incomplete_recovery)
             if restore and isinstance(restore, tuple) and len(restore) == 4:
                 module_path, scope, category, label = restore
                 self._select_module_path(Path(module_path), (scope, category, label))
@@ -1517,7 +1535,9 @@ class MainWindow(QMainWindow):
             if changed(self.doc):
                 raise StructuralEditError("The module changed on disk; reload it before structural editing")
             path = self.doc.path
-            atomic_write(self.doc, edit.text)
+            operation = self._structural_operation(description)
+            location = self._journal_location()
+            journaled_atomic_write(self.doc, edit.text, self.workspace.journal, operation=operation, description=description, location_before=location, location_after={"scope": edit.scope, "category": edit.category, "member": edit.preferred_name})
             self.editor.document().setModified(False)
             self.setWindowModified(False)
             self.workspace.announce_file_changed(path, self)
@@ -1656,7 +1676,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid package directory", "Choose a directory inside the current world.")
             return
         try:
-            created = create_package_init(path)
+            created = path / "__init__.py"
+            journaled_create_file(created, b'"""Package initialization."""\n', self.workspace.journal, operation="create_package_init", description=f"Create {created.name}")
             self._refresh_world()
             self._select_module_path(created)
             self.statusBar().showMessage(f"Created {created}", 5000)
@@ -1677,7 +1698,7 @@ class MainWindow(QMainWindow):
         candidate = replacement(self.doc, self.member, restored_source)
         try:
             validate(candidate, str(path))
-            atomic_write(self.doc, candidate)
+            journaled_atomic_write(self.doc, candidate, self.workspace.journal, operation="save_member", description=f"Save Member {self.member.label}", location_before=self._journal_location(), location_after={"scope": scope, "category": category, "member": self.member.label})
             # Saving is complete before any Browser selection signals are allowed.
             self.editor.document().setModified(False)
             self.setWindowModified(False)
@@ -1710,6 +1731,44 @@ class MainWindow(QMainWindow):
     def _restore(self, scope, category, label, fallback_row=None):
         self._select_location(scope, category, label, fallback_row)
 
+
+    def _journal_location(self):
+        if not self.doc:
+            return None
+        return {"module": str(self.doc.path), "scope": self.member.scope if self.member else None, "category": self.member.category if self.member else None, "member": self.member.label if self.member else None, "cursor": self.editor.textCursor().position()}
+
+    @staticmethod
+    def _structural_operation(description):
+        value = description.casefold()
+        if value.startswith("moved"): return "move_member"
+        if value.startswith("duplicated"): return "duplicate_member"
+        if value.startswith("deleted"): return "delete_member"
+        if value.startswith("renamed"): return "rename_category"
+        if value.startswith("converted"): return "convert_method_kind"
+        if value.startswith("added function"): return "add_function"
+        if value.startswith("added class"): return "add_class"
+        if value.startswith("added"): return "add_method"
+        return "structural_edit"
+
+    def show_structural_history(self):
+        if not self.workspace.journal:
+            QMessageBox.information(self, "Structural History", "Open a World before viewing Structural History.")
+            return
+        window = StructuralHistoryWindow(self.workspace)
+        window.show(); self.child_windows.append(window)
+
+    def _check_incomplete_recovery(self):
+        journal = self.workspace.journal
+        if not journal: return
+        incomplete = journal.incomplete()
+        if not incomplete: return
+        details = []
+        for tx in incomplete[:8]:
+            states = ", ".join(state for _path, state in journal.inspect_state(tx))
+            details.append(f"{tx.timestamp[:19]}  {tx.description}: {states}")
+        message = f"PyBrowser found {len(incomplete)} interrupted source transaction(s).\n\n" + "\n".join(details) + "\n\nOpen Structural History to inspect and restore snapshots?"
+        answer = QMessageBox.question(self, "Incomplete recovery transactions", message, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
+        if answer == QMessageBox.StandardButton.Yes: self.show_structural_history()
 
     def closeEvent(self, event):
         if self._confirm_discard():
