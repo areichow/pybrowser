@@ -62,16 +62,15 @@ def test_service_create_file_is_validated_journaled_and_notified(tmp_path):
 
 def test_post_commit_reparse_failure_keeps_committed_status(tmp_path, monkeypatch):
     import pybrowser.source_write_service as module
-    from pybrowser.source_write_service import SourcePostCommitError
     world,journal,service,notifications=service_for(tmp_path)
     path=world/'app.py'; path.write_text('A = 1\n')
     monkeypatch.setattr(module,'read_document',lambda _path: (_ for _ in ()).throw(OSError('reparse failed')))
-    with pytest.raises(SourcePostCommitError) as info:
-        service.save_document(SaveRequest(read_document(path),'A = 2\n','save_file','Save'))
+    result=service.save_document(SaveRequest(read_document(path),'A = 2\n','save_file','Save'))
     tx=journal.transactions()[0]
     assert path.read_text() == 'A = 2\n'
+    assert result.document.text == 'A = 2\n'
     assert tx.status == 'committed'
-    assert tx.manifest['post_commit_error'] == 'reparse failed'
+    assert 'reparse failed' in tx.manifest['post_commit_error']
 
 def test_notification_failure_returns_committed_result_warning(tmp_path):
     world = tmp_path / 'world'; world.mkdir(); path = world / 'app.py'; path.write_text('A = 1\n')
@@ -82,3 +81,25 @@ def test_notification_failure_returns_committed_result_warning(tmp_path):
     assert result.document.text == 'A = 2\n'
     assert result.warnings == ('Workspace notification failed: notify failed',)
     assert result.transaction.status == 'committed'
+
+def test_retention_failure_is_warning_after_committed_save(tmp_path, monkeypatch):
+    world,journal,service,notifications=service_for(tmp_path)
+    path=world/'app.py'; path.write_text('A = 1\n')
+    monkeypatch.setattr(journal,'prune',lambda: (_ for _ in ()).throw(OSError('prune failed')))
+    result=service.save_document(SaveRequest(read_document(path),'A = 2\n','save_file','Save'))
+    assert result.transaction.status == 'committed'
+    assert path.read_text() == 'A = 2\n'
+    assert any('Recovery retention cleanup failed' in warning for warning in result.warnings)
+
+
+def test_reparse_failure_returns_fallback_committed_document(tmp_path, monkeypatch):
+    import pybrowser.source_write_service as module
+    world,journal,service,notifications=service_for(tmp_path)
+    path=world/'app.py'; path.write_text('A = 1\n')
+    monkeypatch.setattr(module,'read_document',lambda _path: (_ for _ in ()).throw(OSError('reparse failed')))
+    result=service.save_document(SaveRequest(read_document(path),'A = 2\n','save_file','Save'))
+    assert result.document.text == 'A = 2\n'
+    assert result.document.signature[2]
+    assert result.document.scopes == ()
+    assert result.transaction.status == 'committed'
+    assert any('Reparse failed after commit' in warning for warning in result.warnings)

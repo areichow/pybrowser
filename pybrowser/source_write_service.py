@@ -8,7 +8,7 @@ from typing import Callable
 from .model import Document
 from .parser import read_document, validate
 from .recovery import OperationKind, RecoveryJournal, RecoveryTransaction
-from .saving import changed
+from .saving import changed, file_signature
 
 class SourceWriteError(RuntimeError): pass
 class SourceConflictError(SourceWriteError): pass
@@ -55,16 +55,22 @@ class SourceWriteService:
                 except OSError: pass
         finally:
             if temporary.exists(): temporary.unlink()
-    def _post_commit(self, path, transaction, origin):
+    def _post_commit(self, path, transaction, origin, candidate, encoding, newline, maintenance_warnings=()):
+        warnings = list(maintenance_warnings)
         try:
             refreshed = read_document(path)
         except Exception as exc:
-            transaction = self.journal.mark_post_commit_error(transaction, str(exc))
-            raise SourcePostCommitError(
-                f"The source was committed, but reparsing failed: {exc}",
-                transaction, changed_paths=(path,),
-            ) from exc
-        warnings = []
+            message = f"Reparse failed after commit: {exc}"
+            transaction = self.journal.mark_post_commit_error(transaction, message)
+            try:
+                signature = file_signature(path)
+            except OSError:
+                signature = (0, len(candidate.encode(encoding)), transaction.manifest["files"][0].get("after_sha256", ""))
+            # The candidate was fully validated before commit. Keep the editor synchronized
+            # with committed bytes even when rebuilding structural scopes must be retried.
+            refreshed = Document(path, candidate, encoding, newline,
+                                 candidate.endswith(("\n", "\r")), signature, ())
+            warnings.append(message)
         if self.notify:
             try:
                 self.notify(path, origin)
@@ -83,10 +89,12 @@ class SourceWriteService:
         try: self._replace_bytes(path,after,mode)
         except Exception as exc:
             self.journal.mark_failed(directory,manifest,str(exc)); raise
-        try: transaction=self.journal.finalize(directory,manifest,after_snapshot,after)
+        try: transaction, maintenance_warnings=self.journal.finalize(directory,manifest,after_snapshot,after)
         except Exception as exc:
-            raise SourcePostCommitError(f"The source was replaced, but journal finalization failed: {exc}", RecoveryTransaction(directory,manifest)) from exc
-        refreshed, transaction, warnings = self._post_commit(path, transaction, request.origin)
+            raise SourcePostCommitError(f"The source was replaced, but core journal finalization failed: {exc}", RecoveryTransaction(directory,manifest)) from exc
+        refreshed, transaction, warnings = self._post_commit(
+            path, transaction, request.origin, request.text, document.encoding,
+            document.newline, maintenance_warnings)
         return SaveResult(refreshed, transaction, (path,), warnings)
     def create_file(self,path:Path,data:bytes,*,operation="create_file",description="Create file",encoding="utf-8",newline="\n",location_before=None,location_after=None,origin=None)->SaveResult:
         path=Path(path).resolve()
@@ -98,8 +106,10 @@ class SourceWriteService:
             path.parent.mkdir(parents=True,exist_ok=True); self._replace_bytes(path,data,0o644)
         except Exception as exc:
             self.journal.mark_failed(directory,manifest,str(exc)); raise
-        try: transaction=self.journal.finalize(directory,manifest,after_snapshot,data)
+        try: transaction, maintenance_warnings=self.journal.finalize(directory,manifest,after_snapshot,data)
         except Exception as exc:
-            raise SourcePostCommitError(f"The file was created, but journal finalization failed: {exc}",RecoveryTransaction(directory,manifest)) from exc
-        refreshed, transaction, warnings = self._post_commit(path, transaction, origin)
+            raise SourcePostCommitError(f"The file was created, but core journal finalization failed: {exc}",RecoveryTransaction(directory,manifest)) from exc
+        candidate = data.decode(encoding)
+        refreshed, transaction, warnings = self._post_commit(
+            path, transaction, origin, candidate, encoding, newline, maintenance_warnings)
         return SaveResult(refreshed, transaction, (path,), warnings)

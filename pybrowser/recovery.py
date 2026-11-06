@@ -173,6 +173,20 @@ class RecoveryTransaction:
     def pinned(self): return bool(self.manifest.get("pinned", False))
     @property
     def damaged(self): return bool(self.manifest.get("damaged", False))
+    @property
+    def operation(self): return self.manifest.get("operation", "unknown")
+    @property
+    def files(self): return tuple(self.manifest.get("files", ()))
+    @property
+    def committed_at(self): return self.manifest.get("committed_at")
+    @property
+    def undone_at(self): return self.manifest.get("undone_at")
+    @property
+    def redone_at(self): return self.manifest.get("redone_at")
+    @property
+    def recovered_at(self): return self.manifest.get("recovered_at")
+    @property
+    def post_commit_error(self): return self.manifest.get("post_commit_error")
 
 
 class RecoveryJournal:
@@ -374,44 +388,55 @@ class RecoveryJournal:
             ],
         }
 
+    def _snapshot_damage(self, directory, manifest):
+        damaged = False
+        status = manifest.get("status", "unknown")
+        require_after = status in {
+            TransactionStatus.COMMITTED.value, TransactionStatus.UNDONE.value,
+            TransactionStatus.REDONE.value, TransactionStatus.SUPERSEDED.value,
+        }
+        for item in manifest.get("files", []):
+            before_relative = item.get("before_snapshot")
+            after_relative = item.get("after_snapshot")
+            if before_relative and not (directory / before_relative).exists(): damaged = True
+            if require_after and after_relative and not (directory / after_relative).exists(): damaged = True
+        return damaged
+
     def reconcile(self):
-        """Import legacy manifests and flag missing snapshot files."""
+        """Use SQLite as authority; import JSON only when no database row exists."""
         manifest_entries = {}
         for directory in self.root.iterdir():
             manifest_path = directory / "manifest.json"
-            if not directory.is_dir() or not manifest_path.exists():
-                continue
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
+            if not directory.is_dir() or not manifest_path.exists(): continue
+            try: manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError): continue
             manifest_entries[manifest.get("transaction_id", directory.name)] = (directory, manifest)
-
         with self._connect() as db:
-            for directory, manifest in manifest_entries.values():
+            rows = db.execute("SELECT * FROM transactions").fetchall()
+            database_ids = {row["id"] for row in rows}
+            # Existing rows are authoritative. Repair mirror JSON from SQLite.
+            for row in rows:
+                files = db.execute("SELECT * FROM transaction_files WHERE transaction_id = ? ORDER BY file_index", (row["id"],)).fetchall()
+                directory = Path(row["transaction_directory"])
+                canonical = self._manifest_from_row(row, files)
+                damaged = self._snapshot_damage(directory, canonical)
+                if damaged != canonical.get("damaged", False):
+                    db.execute("UPDATE transactions SET damaged = ? WHERE id = ?", (int(damaged), row["id"]))
+                    canonical["damaged"] = damaged
+                try:
+                    current = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    current = None
+                if current != canonical:
+                    _json_write(directory / "manifest.json", canonical)
+            # A portable JSON transaction absent from SQLite is a legacy import.
+            for transaction_id, (directory, manifest) in manifest_entries.items():
+                if transaction_id in database_ids: continue
                 manifest.setdefault("format", FORMAT_VERSION)
                 manifest.setdefault("committed_to_disk", True)
-                damaged = False
-                status = manifest.get("status", "unknown")
-                require_after = status in {
-                    TransactionStatus.COMMITTED.value, TransactionStatus.UNDONE.value,
-                    TransactionStatus.REDONE.value, TransactionStatus.SUPERSEDED.value,
-                }
-                for item in manifest.get("files", []):
-                    before_relative = item.get("before_snapshot")
-                    after_relative = item.get("after_snapshot")
-                    if before_relative and not (directory / before_relative).exists(): damaged = True
-                    if require_after and after_relative and not (directory / after_relative).exists(): damaged = True
-                manifest["damaged"] = damaged
+                manifest["damaged"] = self._snapshot_damage(directory, manifest)
                 self._upsert_manifest(directory, manifest, db)
-                if damaged:
-                    _json_write(directory / "manifest.json", manifest)
-
-            rows = db.execute("SELECT id, transaction_directory FROM transactions").fetchall()
-            for row in rows:
-                directory = Path(row["transaction_directory"])
-                if row["id"] not in manifest_entries and not (directory / "manifest.json").exists():
-                    db.execute("UPDATE transactions SET damaged = 1 WHERE id = ?", (row["id"],))
+                _json_write(directory / "manifest.json", manifest)
 
     def transactions(self) -> tuple[RecoveryTransaction, ...]:
         with self._connect() as db:
@@ -476,17 +501,26 @@ class RecoveryJournal:
         self._upsert_manifest(directory, manifest)
 
     def finalize(self, directory: Path, manifest: dict, after_path: Path, after: bytes):
+        """Persist the core commit. Housekeeping failures become warnings."""
         _write_durable_bytes(after_path, after)
         manifest["status"] = TransactionStatus.COMMITTED.value
         manifest["committed_at"] = datetime.now(timezone.utc).isoformat()
         _json_write(directory / "manifest.json", manifest)
         self._upsert_manifest(directory, manifest)
-        self.supersede_redo_branch(excluding=manifest["transaction_id"])
-        self.prune()
+        transaction = RecoveryTransaction(directory, manifest)
+        warnings = []
+        for label, action in (
+            ("Redo history cleanup", lambda: self.supersede_redo_branch(excluding=manifest["transaction_id"])),
+            ("Recovery retention cleanup", self.prune),
+            ("History notification", self.emit_change),
+        ):
+            try: action()
+            except Exception as exc: warnings.append(f"{label} failed: {exc}")
+        return transaction, tuple(warnings)
+
+    def emit_change(self):
         callback = getattr(self, "on_change", None)
-        if callback:
-            callback()
-        return RecoveryTransaction(directory, manifest)
+        if callback: callback()
 
     def mark_failed(self, directory: Path, manifest: dict, message: str):
         manifest["status"] = "failed"
@@ -653,18 +687,23 @@ class RecoveryJournal:
 
     def prune(self):
         all_transactions = self.transactions()
-        protected_ids = {item.transaction_id for item in all_transactions if item.status in {TransactionStatus.COMMITTED.value, TransactionStatus.REDONE.value, TransactionStatus.UNDONE.value}}
-        completed = [item for item in all_transactions if item.status in TERMINAL_STATES and not item.pinned and item.transaction_id not in protected_ids]
+        latest_undo = self.latest_undo()
+        latest_redo = self.latest_redo()
+        protected_ids = {item.transaction_id for item in all_transactions if item.pinned or item.status in INCOMPLETE_STATES or item.status == TransactionStatus.UNDONE.value}
+        if latest_undo: protected_ids.add(latest_undo.transaction_id)
+        if latest_redo: protected_ids.add(latest_redo.transaction_id)
+        active = [item for item in all_transactions if item.status in {TransactionStatus.COMMITTED.value, TransactionStatus.REDONE.value}]
+        protected_ids.update(item.transaction_id for item in active[:self.max_transactions])
+        completed = [item for item in all_transactions if item.status in TERMINAL_STATES and item.transaction_id not in protected_ids]
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.min_days)
         total = sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file())
         removed = []
-        for index, item in enumerate(reversed(completed)):
+        for item in reversed(completed):
             try: timestamp = datetime.fromisoformat(item.timestamp)
             except ValueError: timestamp = datetime.min.replace(tzinfo=timezone.utc)
-            over_count = len(completed) - index > self.max_transactions
+            over_count = len(all_transactions) - len(removed) > self.max_transactions
             over_size = total > self.max_bytes
-            if not (over_count or over_size) or timestamp > cutoff:
-                continue
+            if not (over_count or over_size) or timestamp > cutoff: continue
             size = sum(p.stat().st_size for p in item.directory.rglob("*") if p.is_file())
             removed.append(item.transaction_id)
             shutil.rmtree(item.directory, ignore_errors=True)

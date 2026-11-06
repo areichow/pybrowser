@@ -148,32 +148,23 @@ PyBrowser should never automatically commit, reset, checkout, stash, or amend Gi
 
 ## Delivery sequence
 
-### Revision A: recovery journal
+### 12A Recovery Journal
+- Durable JSON manifests, SQLite index, and complete before/after snapshots
+- Retention, startup recovery detection, Structural History, and Restore As
 
-- Journal every source write
-- JSON manifests and full before/after snapshots
-- Retention policy
-- Startup detection of incomplete transactions
-- Structural History window with Restore As
-
-### Revision B: safe undo and redo
-
-- Workspace undo/redo stack
-- Hash preconditions
-- `Ctrl+Alt+Z` and `Ctrl+Alt+Y`
-- Cross-window conflict detection and refresh
+### 12B Structural Undo and Redo
+- Hash-guarded workspace undo/redo
+- Cross-window unsaved-edit protection and refresh
 - Browser location restoration
 
-### Revision C: Git context and multi-file polish
+### 12C Shared Write Service
+- One validation, conflict-check, journal, atomic-write, reparse, and notification boundary
 
-- Git metadata in manifests
-- Diff display
-- Multi-file partial-commit recovery
-- Pinned transactions
-- Snapshot compression or content-addressed blobs if storage measurements justify it
+### 12D Git Context and Multi-file Transactions
+- Git metadata, explicit multi-file writes, partial-commit recovery, and diff context
 
-A full LSP client remains a possible later feature, but it is intentionally deferred. Native AST/symbol-table analysis and optional batch BasedPyright/Pyright diagnostics remain the current semantic strategy.
-
+### 12E Journal-only Staging Overlay
+- Virtual World reads, selective commit, retained staged changes, and safe discard
 
 ### Deferred write / image-style commit mode
 
@@ -203,3 +194,8 @@ Removed the remaining parallel write APIs and converted recovery/I/O tests to `S
 ##### Revision 12.6 final hardening
 
 Completed legacy SQLite migrations, restart-aware snapshot requirements, missing-after reconstruction, Structural History recovery disposition controls, commit-before-supersede ordering, conditional state transitions, active-chain retention protection, and post-commit warning results. Revision 12A through 12C can now serve as the stable foundation for 12D.
+
+
+### Revision 12.7 final authority and maintenance hardening
+
+SQLite is authoritative during reconciliation, stale JSON mirrors are repaired, core commit completion is isolated from fallible housekeeping, reparse failures preserve committed editor state, and retention enforces configured limits without deleting active undo/redo candidates.

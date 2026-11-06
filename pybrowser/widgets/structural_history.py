@@ -78,8 +78,10 @@ class StructuralHistoryWindow(QMainWindow):
             return
         files = tx.manifest.get("files", [])
         states = self.journal.inspect_state(tx)
-        lines = [tx.description, f"Operation: {tx.manifest.get('operation')}",
+        lines = [tx.description, f"Operation: {tx.operation}",
                  f"Status: {tx.status}", f"Transaction: {tx.transaction_id}", ""]
+        if tx.post_commit_error:
+            lines.extend(["Committed with warning:", tx.post_commit_error, ""])
         for (path, state), item in zip(states, files):
             lines.extend([str(path), f"Disk state: {state}",
                           f"Before: {item.get('before_sha256')}",
@@ -93,6 +95,8 @@ class StructuralHistoryWindow(QMainWindow):
         self.abort_button.setEnabled(incomplete and state_values == {"current equals before"})
         self.finalize_button.setEnabled(incomplete and state_values == {"current equals after"})
         self.review_button.setEnabled(incomplete and state_values == {"current differs from both"})
+        for button in (self.abort_button, self.finalize_button, self.review_button):
+            button.setVisible(incomplete)
         if files:
             try:
                 before = self.journal.snapshot_path(tx, "before").read_text(

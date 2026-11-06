@@ -310,3 +310,42 @@ def test_new_commit_is_committed_before_redo_branch_superseded(tmp_path, monkeyp
     monkeypatch.setattr(journal,'supersede_redo_branch',inspect)
     service.save_document(SaveRequest(read_document(path),'A = 2\n','save_file','new'))
     assert observed == ['committed']
+
+def test_sqlite_repairs_stale_json_without_reactivating_redo(tmp_path):
+    import sqlite3
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 0\n')
+    history=tmp_path/'history'; journal=RecoveryJournal(world,history); service=SourceWriteService(journal)
+    tx=service.save_document(SaveRequest(read_document(path),'A = 1\n','save_file','one')).transaction
+    undone,_=journal.apply_transaction(tx,'undo')
+    service.save_document(SaveRequest(read_document(path),'A = 2\n','save_file','branch'))
+    stale=json.loads((tx.directory/'manifest.json').read_text()); stale['status']='undone'; stale['pinned']=False
+    (tx.directory/'manifest.json').write_text(json.dumps(stale))
+    with sqlite3.connect(journal.database_path) as db:
+        db.execute('UPDATE transactions SET pinned = 1 WHERE id = ?', (tx.transaction_id,))
+    reopened=RecoveryJournal(world,history)
+    repaired=json.loads((tx.directory/'manifest.json').read_text())
+    assert reopened.get(tx.transaction_id).status == 'superseded'
+    assert repaired['status'] == 'superseded'
+    assert repaired['pinned'] is True
+    assert reopened.latest_redo() is None
+
+
+def test_missing_json_is_rebuilt_from_sqlite(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    history=tmp_path/'history'; journal=RecoveryJournal(world,history)
+    tx=SourceWriteService(journal).save_document(SaveRequest(read_document(path),'A = 2\n','save_file','save')).transaction
+    (tx.directory/'manifest.json').unlink()
+    RecoveryJournal(world,history)
+    assert json.loads((tx.directory/'manifest.json').read_text())['status'] == 'committed'
+
+
+def test_retention_prunes_old_committed_history_but_keeps_latest(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 0\n')
+    journal=RecoveryJournal(world,tmp_path/'history',max_transactions=2,min_days=0,max_megabytes=500)
+    service=SourceWriteService(journal)
+    ids=[]
+    for value in range(1,6):
+        ids.append(service.save_document(SaveRequest(read_document(path),f'A = {value}\n','save_file',str(value))).transaction.transaction_id)
+    remaining={tx.transaction_id for tx in journal.transactions()}
+    assert ids[-1] in remaining
+    assert len(remaining) <= 2
