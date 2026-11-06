@@ -280,3 +280,10 @@ The compact Find row now includes **Order: File / Sort**. **File** preserves sou
 The synthetic `-- entire category --` Member has been removed. File View is now the supported way to inspect or edit multiple Members together, which avoids a second overlapping structural editing model and keeps Member lists limited to real source constructs.
 
 During a Member drag, the Category under the pointer receives a bright blue `#2f78c4` background. The highlight follows the pointer and is cleared on drop or drag leave.
+
+
+### Revision 11.9 implicit module globals and indentation design
+
+Native semantic analysis now recognizes the names supplied by Python's module execution environment: `__name__`, `__file__`, `__cached__`, `__package__`, `__loader__`, `__spec__`, `__builtins__`, `__annotations__`, `__doc__`, and the built-in constant `__debug__`. These names are valid when referenced from functions as module globals and no longer produce `possibly-undefined-local` hints. Special method names such as `__repr__` and `__add__` are definitions or attributes rather than automatically bound bare globals, so arbitrary dunder spellings are not globally suppressed.
+
+`INDENTATION_PLAN.md` specifies a reversible Member-editor projection that displays class and nested-class Members at column zero, records the exact source prefix, reapplies it before full-module validation, and leaves File View literal and unchanged. The plan intentionally precedes implementation because indentation projection touches the save boundary and requires round-trip coverage for tabs, decorators, nested classes, multiline strings, CRLF, encodings, and external-change protection.

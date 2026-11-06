@@ -10,6 +10,18 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+# Names supplied by Python's module execution environment rather than by an
+# explicit source-level assignment. These are valid bare names in module code
+# and in functions that resolve them as globals.
+IMPLICIT_MODULE_GLOBALS = frozenset({
+    "__name__", "__file__", "__cached__", "__package__", "__loader__",
+    "__spec__", "__builtins__", "__annotations__", "__doc__",
+})
+
+# __debug__ is a built-in compile-time constant and is already present in
+# dir(builtins), but naming it here documents its special status.
+IMPLICIT_BUILTIN_GLOBALS = frozenset({"__debug__"})
+
 CATEGORY_LINE = re.compile(r"^(?P<indent>[ \t]*)#[ \t]*category[ \t]*:[ \t]*(?P<name>[^#\r\n]+?)\s*$", re.I)
 
 
@@ -77,6 +89,8 @@ class SemanticVisitor(ast.NodeVisitor):
         # Python resolves globals from the complete module namespace, regardless
         # of whether a class/function appears before or after the current use.
         self.module_bindings = set(module_bindings)
+        self.module_bindings.update(IMPLICIT_MODULE_GLOBALS)
+        self.module_bindings.update(IMPLICIT_BUILTIN_GLOBALS)
 
     @property
     def scope_name(self):

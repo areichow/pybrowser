@@ -103,3 +103,23 @@ def colorize(value):
     messages = [item.message for item in result.diagnostics if item.rule == "possibly-undefined-local"]
     assert not any("diagnostic" in message for message in messages)
     assert not any("colorize" in message for message in messages)
+
+
+def test_implicit_module_globals_are_not_undefined():
+    source = """def paths():
+    return (__file__, __name__, __package__, __loader__, __spec__, __cached__, __builtins__, __annotations__, __doc__, __debug__)
+"""
+    result = analyze_source(Path("app.py"), source)
+    messages = [item.message for item in result.diagnostics if item.rule == "possibly-undefined-local"]
+    for name in ("__file__", "__name__", "__package__", "__loader__", "__spec__", "__cached__", "__builtins__", "__annotations__", "__doc__", "__debug__"):
+        assert not any(repr(name) in message for message in messages)
+
+
+def test_arbitrary_dunder_is_not_assumed_to_be_a_bare_global():
+    result = analyze_source(Path("app.py"), "def run():\n    return __totally_custom_dunder__\n")
+    assert any(item.rule == "possibly-undefined-local" and "__totally_custom_dunder__" in item.message for item in result.diagnostics)
+
+
+def test_special_method_definition_does_not_need_global_whitelisting():
+    result = analyze_source(Path("app.py"), "class Value:\n    def __repr__(self):\n        return 'Value()'\n")
+    assert not any(item.rule == "possibly-undefined-local" and "__repr__" in item.message for item in result.diagnostics)
