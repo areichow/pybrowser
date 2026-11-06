@@ -6,6 +6,7 @@ from PySide6.QtCore import QObject, QSettings, Signal
 from PySide6.QtWidgets import QApplication
 
 from .recovery import RecoveryConflictError, RecoveryJournal
+from .source_write_service import SourceWriteService
 
 
 class WorkspaceUndoError(RuntimeError):
@@ -29,6 +30,7 @@ class Workspace(QObject):
         self.windows = []
         self.active_browser = None
         self.journal = None
+        self.write_service = None
 
     def set_world(self, world):
         self.world = world
@@ -40,6 +42,7 @@ class Workspace(QObject):
             max_megabytes=settings.value("recovery/maxMegabytes", 500, int),
         )
         self.journal.on_change = self.history_changed.emit
+        self.write_service = SourceWriteService(self.journal, self.announce_file_changed)
         self.world_changed.emit(world)
         self.history_changed.emit()
 

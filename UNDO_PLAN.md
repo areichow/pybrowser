@@ -183,3 +183,8 @@ A future phase will add a preference choosing between **Write through immediatel
 ### Revision 12.1 SQLite journal index
 
 `journal.sqlite3` is now the authoritative metadata index while complete source snapshots and portable per-transaction `manifest.json` files remain on the filesystem. The database uses foreign keys, WAL mode, `synchronous=FULL`, and a 5000 ms busy timeout. On World open, PyBrowser imports Revision 12.0 JSON-only transactions, reconciles rows with transaction directories, and marks transactions damaged when required snapshot files are missing. This schema includes `committed_to_disk` so the future staged overlay can query pending changes without another metadata migration.
+
+
+#### Revision 12.3 shared write service
+
+All active source mutation paths now use `SourceWriteService`. The service owns complete-module validation, external signature conflict detection, recovery-journal preparation and finalization, atomic replacement, reparsing, and Workspace notification. Browser Member saves, File View saves, editable query saves, structural operations, and package file creation no longer call journal or atomic-write helpers directly. This boundary is the required insertion point for the future staged World overlay and selective commit modes.

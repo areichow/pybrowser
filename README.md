@@ -317,3 +317,10 @@ The database enables `PRAGMA foreign_keys=ON`, `journal_mode=WAL`, `synchronous=
 Workspace-level **Undo Structural Change** (`Ctrl+Alt+Z`) and **Redo Structural Change** (`Ctrl+Alt+Y`) now restore journal snapshots only when every affected file matches the transaction's expected SHA-256. A mismatch blocks the operation without writing and directs the user to Structural History for comparison, Restore As, or File View. Browser, File View, Implementers, and Senders windows with unsaved edits in an affected file also block the operation and are activated for resolution.
 
 Transactions progress from `committed` or `redone` to `undone`, and from `undone` to `redone`. SQLite and `manifest.json` both persist `undone_at` and `redone_at`. Structural History now provides **Undo Selected**, **Redo Selected**, **Open File View**, and eligibility-aware controls. Successful restoration preserves file modes, uses sibling temporary files and `os.replace()`, rolls back already-restored files if a later file fails, broadcasts every affected path to all workspace windows, refreshes semantic indexes, and restores the recorded Browser location. Undoing creation of a package `__init__.py` removes the file; redo recreates it.
+
+
+## Revision 12.3 shared write service
+
+`SourceWriteService` is now the single source-write authority. Browser Member saves, structural commands, File View, editable Implementers/Senders/reference windows, and package `__init__.py` creation submit `SaveRequest` objects through the Workspace service. The service validates the full module, checks the loaded document signature, prepares and finalizes the recovery transaction, performs an `fsync()` plus `os.replace()` atomic write, reparses the stored module, returns a `SaveResult`, and broadcasts the changed path exactly once.
+
+UI windows retain presentation responsibilities such as projection reconstruction, selection restoration, cursor restoration, and error dialogs. They no longer directly coordinate journaling and disk replacement. This creates the stable boundary needed by the future journal-only staging overlay and **Commit Changes...** workflow.

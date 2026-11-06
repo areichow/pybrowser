@@ -3,9 +3,9 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QLabel, QListWidget, QMainWindow, QMessageBox, QSplitter, QVBoxLayout, QWidget
 from .editor import Editor
-from ..parser import ParseError, read_document, replacement, validate
+from ..parser import ParseError, read_document, replacement
 from ..saving import changed
-from ..recovery import journaled_atomic_write
+from ..source_write_service import SaveRequest
 from ..windowing import install_window_commands
 from ..member_projection import MemberProjection, project_member, restore_member
 
@@ -90,10 +90,12 @@ class CodeQueryDialog(QMainWindow):
         restored_source = restore_member(self.member_projection, self.preview.toPlainText())
         candidate = replacement(self.current_document, self.current_member, restored_source)
         try:
-            validate(candidate, str(self.current_document.path)); journaled_atomic_write(self.current_document, candidate, self.workspace.journal, operation="save_member", description=f"Save query Member {self.current_member.label}")
-            self.current_document = read_document(self.current_document.path)
+            result = self.workspace.write_service.save_document(SaveRequest(
+                self.current_document, candidate, "save_member",
+                f"Save query Member {self.current_member.label}", origin=self,
+            ))
+            self.current_document = result.document
             self.preview.document().setModified(False)
-            self.workspace.announce_file_changed(self.current_document.path, self)
         except (OSError, ParseError) as exc: QMessageBox.critical(self, "Save failed", str(exc))
 
     def abandon(self):

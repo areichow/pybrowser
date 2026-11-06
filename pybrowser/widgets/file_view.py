@@ -10,9 +10,9 @@ from PySide6.QtWidgets import (
 from .editor import Editor
 from .file_find_dialog import FileFindDialog
 from ..file_search import compile_pattern, find_hits
-from ..parser import ParseError, read_document, validate
+from ..parser import ParseError, read_document
 from ..saving import changed
-from ..recovery import journaled_atomic_write
+from ..source_write_service import SaveRequest
 from ..windowing import install_window_commands
 
 
@@ -154,9 +154,10 @@ class FileViewWindow(QMainWindow):
             QMessageBox.warning(self, "File changed", "The file changed in another window. Reload it before saving."); return
         text = self.editor.toPlainText()
         try:
-            validate(text, str(self.path)); journaled_atomic_write(self.document_model, text, self.workspace.journal, operation="save_file", description=f"Save File View {self.path.name}")
-            self.document_model = read_document(self.path); self.editor.document().setModified(False)
-            self.workspace.announce_file_changed(self.path, self)
+            result = self.workspace.write_service.save_document(SaveRequest(
+                self.document_model, text, "save_file", f"Save File View {self.path.name}", origin=self,
+            ))
+            self.document_model = result.document; self.editor.document().setModified(False)
         except (OSError, ParseError) as exc: QMessageBox.critical(self, "Save failed", str(exc))
 
     def abandon(self):

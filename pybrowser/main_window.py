@@ -25,7 +25,7 @@ from .structural import (
     create_package_init, delete_member, duplicate_member, move_member, rename_category,
 )
 from threading import Event
-from .saving import atomic_write, changed
+from .saving import changed
 from .search import SearchMatch, find_all
 from .widgets.editor import Editor
 from .widgets.preferences_dialog import PreferencesDialog
@@ -40,7 +40,7 @@ from .semantic import analyze_source
 from .semantic_queries import references_in_world
 from .diagnostic_aggregation import DiagnosticAggregation, decorate
 from .member_projection import MemberProjection, project_member, restore_member
-from .recovery import journaled_atomic_write, journaled_create_file
+from .source_write_service import SaveRequest, SourceConflictError
 from .widgets.structural_history import StructuralHistoryWindow
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
@@ -1545,10 +1545,14 @@ class MainWindow(QMainWindow):
             path = self.doc.path
             operation = self._structural_operation(description)
             location = self._journal_location()
-            journaled_atomic_write(self.doc, edit.text, self.workspace.journal, operation=operation, description=description, location_before=location, location_after={"scope": edit.scope, "category": edit.category, "member": edit.preferred_name})
+            self.workspace.write_service.save_document(SaveRequest(
+                self.doc, edit.text, operation, description,
+                location_before=location,
+                location_after={"module": str(self.doc.path), "scope": edit.scope, "category": edit.category, "member": edit.preferred_name},
+                origin=self,
+            ))
             self.editor.document().setModified(False)
             self.setWindowModified(False)
-            self.workspace.announce_file_changed(path, self)
             self.index_cache.invalidate(path)
             self._open_module(path, (edit.scope, edit.category, edit.preferred_name), fallback_row=fallback_row)
             if edit.preferred_name and occurrence:
@@ -1685,7 +1689,10 @@ class MainWindow(QMainWindow):
             return
         try:
             created = path / "__init__.py"
-            journaled_create_file(created, b'"""Package initialization."""\n', self.workspace.journal, operation="create_package_init", description=f"Create {created.name}")
+            self.workspace.write_service.create_file(
+                created, b'"""Package initialization."""\n',
+                operation="create_package_init", description=f"Create {created.name}", origin=self,
+            )
             self._refresh_world()
             self._select_module_path(created)
             self.statusBar().showMessage(f"Created {created}", 5000)
@@ -1705,12 +1712,15 @@ class MainWindow(QMainWindow):
         restored_source = restore_member(self.member_projection, self.editor.toPlainText())
         candidate = replacement(self.doc, self.member, restored_source)
         try:
-            validate(candidate, str(path))
-            journaled_atomic_write(self.doc, candidate, self.workspace.journal, operation="save_member", description=f"Save Member {self.member.label}", location_before=self._journal_location(), location_after={"scope": scope, "category": category, "member": self.member.label})
+            result = self.workspace.write_service.save_document(SaveRequest(
+                self.doc, candidate, "save_member", f"Save Member {self.member.label}",
+                location_before=self._journal_location(),
+                location_after={"module": str(path), "scope": scope, "category": category, "member": self.member.label},
+                origin=self,
+            ))
             # Saving is complete before any Browser selection signals are allowed.
             self.editor.document().setModified(False)
             self.setWindowModified(False)
-            self.workspace.announce_file_changed(path, self)
             self.index_cache.invalidate(path)
             self._open_module(path, (scope, category, ""), fallback_row=row)
             if bookmark and self.member:
