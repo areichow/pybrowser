@@ -33,7 +33,7 @@ class PreferencesDialog(QDialog):
         form.addRow("Tab width:", self.tab_width)
         form.addRow("Show whitespace:", self.show_whitespace)
         form.addRow("Dedent Member editor:", self.dedent_members)
-        form.addRow("Recovery transactions:", self.recovery_max_transactions)
+        form.addRow("Recent completed transactions:", self.recovery_max_transactions)
         form.addRow("Minimum retention days:", self.recovery_min_days)
         form.addRow("Recovery limit (MB):", self.recovery_max_megabytes)
         form.addRow("Theme:", self.theme)

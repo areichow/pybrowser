@@ -204,3 +204,8 @@ SQLite is authoritative during reconciliation, stale JSON mirrors are repaired, 
 ### Revision 12.8 structural and concurrency completion
 
 Completed structural command regression repair, duplicate-selection safety, schema 4 recovery timestamps, portable manifest reconstruction, SQLite-first metadata transitions, claimed undo/redo transitions, and crash-aware pruning. Development validation now includes Ruff F821 undefined-name checking.
+
+
+#### Revision 12.9 final transient-state and conflict hardening
+
+Interrupted undoing and redoing claims now have restart dispositions based on before/after hashes. Pruning uses durable pending-deletion records and startup completion. Existing-file saves use stable read-and-verify snapshots, new-file writes use exclusive no-replace creation, metadata transitions merge from authoritative SQLite state, and multiple post-commit warnings are preserved.

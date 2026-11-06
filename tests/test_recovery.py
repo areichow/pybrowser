@@ -228,7 +228,7 @@ def test_schema_user_version_is_current(tmp_path):
     world=tmp_path/'world'; world.mkdir(); journal=RecoveryJournal(world,tmp_path/'history')
     import sqlite3
     with sqlite3.connect(journal.database_path) as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 4
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 5
 
 def _create_legacy_database(path, version):
     import sqlite3
@@ -268,7 +268,7 @@ def test_real_schema_1_and_2_databases_migrate(tmp_path):
         _create_legacy_database(root / 'journal.sqlite3', version)
         journal = RecoveryJournal(world, history)
         with sqlite3.connect(journal.database_path) as db:
-            assert db.execute('PRAGMA user_version').fetchone()[0] == 4
+            assert db.execute('PRAGMA user_version').fetchone()[0] == 5
             columns = {row[1] for row in db.execute('PRAGMA table_info(transactions)')}
             assert {'undone_at', 'redone_at', 'post_commit_error', 'post_commit_error_at'} <= columns
             indexes = {row[1] for row in db.execute('PRAGMA index_list(transactions)')}
@@ -388,3 +388,65 @@ def test_undo_claim_blocks_second_journal_before_source_write(tmp_path, monkeypa
     with __import__('pytest').raises(RecoveryConflictError): second.apply_transaction(tx,'undo')
     first.set_status(claimed,'committed',expected_statuses={'undoing'})
     assert path.read_text() == 'A = 2\n'
+
+def test_interrupted_undo_claim_can_roll_back_or_finalize_after_restart(tmp_path):
+    from pybrowser.recovery import TransactionStatus
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    history=tmp_path/'history'; journal=RecoveryJournal(world,history)
+    tx=SourceWriteService(journal).save_document(SaveRequest(read_document(path),'A = 2\n','save_file','save')).transaction
+    claimed=journal.set_status(tx,TransactionStatus.UNDOING.value,expected_statuses={'committed'})
+    reopened=RecoveryJournal(world,history); found=reopened.incomplete()[0]
+    assert found.status == 'undoing'
+    assert reopened.resolve_incomplete(found,'abort').status == 'committed'
+    claimed=reopened.set_status(reopened.get(tx.transaction_id),'undoing',expected_statuses={'committed'})
+    path.write_text('A = 1\n')
+    finalized=RecoveryJournal(world,history).resolve_incomplete(RecoveryJournal(world,history).get(tx.transaction_id),'finalize')
+    assert finalized.status == 'undone'
+
+
+def test_interrupted_redo_claim_can_roll_back_or_finalize_after_restart(tmp_path):
+    from pybrowser.recovery import TransactionStatus
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    history=tmp_path/'history'; journal=RecoveryJournal(world,history)
+    tx=SourceWriteService(journal).save_document(SaveRequest(read_document(path),'A = 2\n','save_file','save')).transaction
+    undone,_=journal.apply_transaction(tx,'undo')
+    claimed=journal.set_status(undone,TransactionStatus.REDOING.value,expected_statuses={'undone'})
+    reopened=RecoveryJournal(world,history); assert reopened.resolve_incomplete(reopened.get(tx.transaction_id),'abort').status == 'undone'
+    claimed=reopened.set_status(reopened.get(tx.transaction_id),'redoing',expected_statuses={'undone'})
+    path.write_text('A = 2\n')
+    assert RecoveryJournal(world,history).resolve_incomplete(RecoveryJournal(world,history).get(tx.transaction_id),'finalize').status == 'redone'
+
+
+def test_pruning_recovery_restores_existing_directory_and_deletes_missing(tmp_path):
+    import sqlite3
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    history=tmp_path/'history'; journal=RecoveryJournal(world,history)
+    tx=SourceWriteService(journal).save_document(SaveRequest(read_document(path),'A = 2\n','save_file','save')).transaction
+    with sqlite3.connect(journal.database_path) as db:
+        db.execute("UPDATE transactions SET status='pruning' WHERE id=?",(tx.transaction_id,))
+        db.execute("INSERT INTO pending_deletions VALUES (?, ?, ?)",(tx.transaction_id,'committed','now'))
+    assert RecoveryJournal(world,history).get(tx.transaction_id).status == 'committed'
+    with sqlite3.connect(journal.database_path) as db:
+        db.execute("UPDATE transactions SET status='pruning' WHERE id=?",(tx.transaction_id,))
+        db.execute("INSERT INTO pending_deletions VALUES (?, ?, ?)",(tx.transaction_id,'committed','now'))
+    import shutil; shutil.rmtree(tx.directory)
+    reopened=RecoveryJournal(world,history)
+    assert reopened.get(tx.transaction_id) is None and not tx.directory.exists()
+
+
+def test_status_transition_preserves_newer_pin_metadata(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    journal=RecoveryJournal(world,tmp_path/'history')
+    stale=SourceWriteService(journal).save_document(SaveRequest(read_document(path),'A = 2\n','save_file','save')).transaction
+    journal.set_pinned(stale,True)
+    updated=journal.set_status(stale,'redone',expected_statuses={'committed'})
+    assert updated.pinned is True
+
+
+def test_post_commit_warnings_accumulate(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    journal=RecoveryJournal(world,tmp_path/'history')
+    tx=SourceWriteService(journal).save_document(SaveRequest(read_document(path),'A = 2\n','save_file','save')).transaction
+    tx=journal.mark_post_commit_error(tx,'first')
+    tx=journal.mark_post_commit_error(tx,'second')
+    assert tx.post_commit_error == 'first\nsecond'

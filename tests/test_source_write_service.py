@@ -103,3 +103,27 @@ def test_reparse_failure_returns_fallback_committed_document(tmp_path, monkeypat
     assert result.document.scopes == ()
     assert result.transaction.status == 'committed'
     assert any('Reparse failed after commit' in warning for warning in result.warnings)
+
+def test_stable_read_conflict_uses_same_bytes_for_check_and_journal(tmp_path, monkeypatch):
+    import pybrowser.source_write_service as module
+    from pybrowser.saving import StableFileRead
+    world,journal,service,notifications=service_for(tmp_path)
+    path=world/'app.py'; path.write_text('A = 1\n'); document=read_document(path)
+    path.write_text('A = 9\n')
+    actual=module.stable_read(path)
+    monkeypatch.setattr(module,'stable_read',lambda _path: actual)
+    with pytest.raises(SourceConflictError): service.save_document(SaveRequest(document,'A = 2\n','save_file','save'))
+    assert path.read_text() == 'A = 9\n' and journal.transactions() == ()
+
+
+def test_create_file_never_replaces_concurrently_created_target(tmp_path, monkeypatch):
+    world,journal,service,notifications=service_for(tmp_path)
+    path=world/'pkg'/'__init__.py'
+    original=service._create_bytes_exclusive
+    def race(target,data,mode):
+        target.parent.mkdir(parents=True,exist_ok=True); target.write_text('EXTERNAL = 1\n')
+        return original(target,data,mode)
+    monkeypatch.setattr(service,'_create_bytes_exclusive',race)
+    with pytest.raises(SourceConflictError): service.create_file(path,b'VALUE = 2\n')
+    assert path.read_text() == 'EXTERNAL = 1\n'
+    assert journal.transactions()[0].status == 'failed'

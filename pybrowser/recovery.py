@@ -20,7 +20,7 @@ except ImportError:
     QStandardPaths = None
 
 FORMAT_VERSION = 3
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 class RecoverySchemaError(RuntimeError):
     pass
@@ -91,7 +91,9 @@ class TransactionManifest(TypedDict, total=False):
     post_commit_error_at: str
     damaged: bool
 
-INCOMPLETE_STATES = {TransactionStatus.PREPARED.value, TransactionStatus.COMMITTING.value}
+WRITE_INCOMPLETE_STATES = {TransactionStatus.PREPARED.value, TransactionStatus.COMMITTING.value}
+HISTORY_INCOMPLETE_STATES = {TransactionStatus.UNDOING.value, TransactionStatus.REDOING.value}
+INCOMPLETE_STATES = WRITE_INCOMPLETE_STATES | HISTORY_INCOMPLETE_STATES
 TERMINAL_STATES = {
     TransactionStatus.COMMITTED.value, TransactionStatus.UNDONE.value,
     TransactionStatus.REDONE.value, TransactionStatus.SUPERSEDED.value,
@@ -209,6 +211,7 @@ class RecoveryJournal:
         if not metadata.exists():
             _json_write(metadata, {"format": FORMAT_VERSION, "world_root": str(self.world_root)})
         self._initialize_database()
+        self._recover_pruning()
         self.reconcile()
 
     def _connect(self):
@@ -242,6 +245,8 @@ class RecoveryJournal:
                         self._migrate_2_to_3(db)
                     elif version == 3:
                         self._migrate_3_to_4(db)
+                    elif version == 4:
+                        self._migrate_4_to_5(db)
                     version += 1
                     db.execute(f"PRAGMA user_version = {version}")
             self._create_indexes(db)
@@ -261,6 +266,12 @@ class RecoveryJournal:
                 error TEXT, post_commit_error TEXT, post_commit_error_at TEXT,
                 damaged INTEGER NOT NULL DEFAULT 0,
                 transaction_directory TEXT NOT NULL
+            );
+            CREATE TABLE pending_deletions (
+                transaction_id TEXT PRIMARY KEY,
+                original_status TEXT NOT NULL,
+                claimed_at TEXT NOT NULL,
+                FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE
             );
             CREATE TABLE transaction_files (
                 transaction_id TEXT NOT NULL, file_index INTEGER NOT NULL,
@@ -307,6 +318,10 @@ class RecoveryJournal:
         for name in ("recovered_at", "reviewed_at", "superseded_at"):
             if name not in columns:
                 db.execute(f"ALTER TABLE transactions ADD COLUMN {name} TEXT")
+
+    @staticmethod
+    def _migrate_4_to_5(db):
+        db.execute("CREATE TABLE IF NOT EXISTS pending_deletions (transaction_id TEXT PRIMARY KEY, original_status TEXT NOT NULL, claimed_at TEXT NOT NULL, FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE)")
 
     @staticmethod
     def _manifest_json(value):
@@ -424,6 +439,17 @@ class RecoveryJournal:
             if before_relative and not (directory / before_relative).exists(): damaged = True
             if require_after and after_relative and not (directory / after_relative).exists(): damaged = True
         return damaged
+
+    def _recover_pruning(self):
+        with self._connect() as db:
+            rows = db.execute("SELECT p.transaction_id, p.original_status, t.transaction_directory FROM pending_deletions p JOIN transactions t ON t.id = p.transaction_id").fetchall()
+            for row in rows:
+                directory = Path(row["transaction_directory"])
+                if directory.exists():
+                    db.execute("UPDATE transactions SET status = ? WHERE id = ? AND status = ?", (row["original_status"], row["transaction_id"], TransactionStatus.PRUNING.value))
+                    db.execute("DELETE FROM pending_deletions WHERE transaction_id = ?", (row["transaction_id"],))
+                else:
+                    db.execute("DELETE FROM transactions WHERE id = ?", (row["transaction_id"],))
 
     def reconcile(self):
         """Use SQLite as authority; import JSON only when no database row exists."""
@@ -609,13 +635,15 @@ class RecoveryJournal:
             return self._transaction_from_row(db, row)
 
     def set_status(self, transaction, status, expected_statuses=None, **extra):
-        status = str(status); manifest = dict(transaction.manifest)
+        status = str(status)
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            current = db.execute("SELECT status FROM transactions WHERE id = ?", (transaction.transaction_id,)).fetchone()
-            if current is None: raise RecoveryConflictError("The transaction no longer exists.", transaction)
-            if expected_statuses and current[0] not in set(expected_statuses):
-                raise RecoveryConflictError(f"Transaction state changed from {transaction.status} to {current[0]}.", transaction)
+            row = db.execute("SELECT * FROM transactions WHERE id = ?", (transaction.transaction_id,)).fetchone()
+            if row is None: raise RecoveryConflictError("The transaction no longer exists.", transaction)
+            if expected_statuses and row["status"] not in set(expected_statuses):
+                raise RecoveryConflictError(f"Transaction state changed from {transaction.status} to {row['status']}.", transaction)
+            files = db.execute("SELECT * FROM transaction_files WHERE transaction_id = ? ORDER BY file_index", (transaction.transaction_id,)).fetchall()
+            manifest = self._manifest_from_row(row, files)
             manifest["status"] = status; manifest.update(extra)
             self._upsert_manifest(transaction.directory, manifest, db)
         _json_write(transaction.directory / "manifest.json", manifest)
@@ -635,23 +663,37 @@ class RecoveryJournal:
             if tx: _json_write(directory / "manifest.json", tx.manifest)
 
     def mark_post_commit_error(self, transaction, message):
-        return self.set_status(transaction, transaction.status, post_commit_error=message, post_commit_error_at=datetime.now(timezone.utc).isoformat())
+        current = self.get(transaction.transaction_id) or transaction
+        existing = current.post_commit_error
+        combined = "\n".join(value for value in (existing, message) if value)
+        return self.set_status(current, current.status, post_commit_error=combined, post_commit_error_at=datetime.now(timezone.utc).isoformat())
 
     def resolve_incomplete(self, transaction, action):
         states = {state for _path, state in self.inspect_state(transaction)}
         now = datetime.now(timezone.utc).isoformat()
-        if action == "abort" and states == {"current equals before"}:
-            return self.set_status(transaction, TransactionStatus.ABORTED.value, expected_statuses=INCOMPLETE_STATES, recovered_at=now)
-        if action == "finalize" and states == {"current equals after"}:
-            for index, item in enumerate(transaction.manifest.get("files", [])):
-                path = _transaction_path(item)
-                current = path.read_bytes() if path.exists() else b""
-                if sha256_bytes(current) != item.get("after_sha256"):
-                    raise RecoveryConflictError("The current file no longer matches the intended after hash.", transaction)
-                after = self.snapshot_path(transaction, "after", index)
-                if not after.exists(): _write_durable_bytes(after, current)
-            return self.set_status(transaction, TransactionStatus.COMMITTED.value, expected_statuses=INCOMPLETE_STATES, recovered_at=now, committed_at=transaction.manifest.get("committed_at") or now)
-        if action == "review":
+        status = transaction.status
+        if status in WRITE_INCOMPLETE_STATES:
+            if action == "abort" and states == {"current equals before"}:
+                return self.set_status(transaction, TransactionStatus.ABORTED.value, expected_statuses=WRITE_INCOMPLETE_STATES, recovered_at=now)
+            if action == "finalize" and states == {"current equals after"}:
+                for index, item in enumerate(transaction.files):
+                    path = _transaction_path(item); current = path.read_bytes() if path.exists() else b""
+                    if sha256_bytes(current) != item.get("after_sha256"): raise RecoveryConflictError("The current file no longer matches the intended after hash.", transaction)
+                    after = self.snapshot_path(transaction, "after", index)
+                    if not after.exists(): _write_durable_bytes(after, current)
+                return self.set_status(transaction, TransactionStatus.COMMITTED.value, expected_statuses=WRITE_INCOMPLETE_STATES, recovered_at=now, committed_at=transaction.committed_at or now)
+        elif status == TransactionStatus.UNDOING.value:
+            if action == "abort" and states == {"current equals after"}:
+                original = TransactionStatus.REDONE.value if transaction.redone_at else TransactionStatus.COMMITTED.value
+                return self.set_status(transaction, original, expected_statuses={status}, recovered_at=now)
+            if action == "finalize" and states == {"current equals before"}:
+                return self.set_status(transaction, TransactionStatus.UNDONE.value, expected_statuses={status}, recovered_at=now, undone_at=transaction.undone_at or now)
+        elif status == TransactionStatus.REDOING.value:
+            if action == "abort" and states == {"current equals before"}:
+                return self.set_status(transaction, TransactionStatus.UNDONE.value, expected_statuses={status}, recovered_at=now)
+            if action == "finalize" and states == {"current equals after"}:
+                return self.set_status(transaction, TransactionStatus.REDONE.value, expected_statuses={status}, recovered_at=now, redone_at=transaction.redone_at or now)
+        if action == "review" and status in INCOMPLETE_STATES:
             return self.set_status(transaction, TransactionStatus.REVIEWED.value, expected_statuses=INCOMPLETE_STATES, reviewed_at=now)
         raise RecoveryConflictError("The selected recovery action is not safe for the current disk state.", transaction, self.inspect_state(transaction))
 
@@ -735,13 +777,16 @@ class RecoveryJournal:
             db.execute("BEGIN IMMEDIATE")
             for item,size in candidates:
                 cursor=db.execute("UPDATE transactions SET status = ? WHERE id = ? AND status = ?",(TransactionStatus.PRUNING.value,item.transaction_id,item.status))
-                if cursor.rowcount==1: claimed.append((item,size))
+                if cursor.rowcount==1:
+                    db.execute("INSERT OR REPLACE INTO pending_deletions (transaction_id, original_status, claimed_at) VALUES (?, ?, ?)", (item.transaction_id, item.status, datetime.now(timezone.utc).isoformat()))
+                    claimed.append((item,size))
         for item,_size in claimed:
             try:
                 shutil.rmtree(item.directory)
             except OSError:
                 with self._connect() as db:
                     db.execute("UPDATE transactions SET status = ? WHERE id = ? AND status = ?",(item.status,item.transaction_id,TransactionStatus.PRUNING.value))
+                    db.execute("DELETE FROM pending_deletions WHERE transaction_id = ?", (item.transaction_id,))
                 continue
             with self._connect() as db:
                 db.execute("DELETE FROM transactions WHERE id = ? AND status = ?",(item.transaction_id,TransactionStatus.PRUNING.value))

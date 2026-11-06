@@ -179,6 +179,10 @@ Sender analysis is lexical. Calls such as `run()`, `self.run()`, `worker.run()`,
 - Code font and size
 - Tab width
 - Visible whitespace
+- Dedent Member editor
+- Recent completed recovery transactions
+- Minimum recovery retention days
+- Recovery storage limit in MB
 - Dark or light theme
 
 Preferences and main-window geometry are stored using `QSettings`.
@@ -351,3 +355,8 @@ SQLite is now unequivocally authoritative when a database row and portable manif
 ### Revision 12.8 structural command and recovery consistency fixes
 
 Revision 12.8 restores all Browser structural commands by removing the obsolete UI-side validate and changed checks and routing validation and conflict detection exclusively through SourceWriteService. Duplicate Member now selects the inserted occurrence, selects its Python identifier for immediate renaming, and records separate duplicate_member and save_member transactions. Structural commands handle SourceConflictError, SourcePostCommitError, and SaveResult warnings. Recovery schema 4 persists recovered_at, reviewed_at, and superseded_at; reconstructed JSON uses the portable manifest shape; SQLite-first metadata transitions are used for pinning, status changes, and redo supersession. Undo and redo claim undoing/redoing states before replacing source files, and retention claims pruning rows before directory deletion. Ruff F821 is included in development checks to prevent undefined-name regressions.
+
+
+#### Revision 12.9 transient recovery and stable write conflicts
+
+Revision 12.9 recovers interrupted undoing, redoing, and pruning states after restart. Structural History can safely roll back or finalize claimed undo/redo transitions according to current file hashes, while ambiguous mixed states require review. Pending deletion records prevent reconciliation from recreating successfully pruned transaction directories. SourceWriteService now obtains one stable byte image and signature for conflict detection and journaling, and new-file creation uses O_EXCL no-replace semantics. Status changes merge from the current authoritative SQLite row, multiple post-commit warnings are retained, and recovery preference documentation is complete.

@@ -8,7 +8,7 @@ from typing import Callable
 from .model import Document
 from .parser import read_document, validate
 from .recovery import OperationKind, RecoveryJournal, RecoveryTransaction
-from .saving import changed, file_signature
+from .saving import file_signature, stable_read
 
 class SourceWriteError(RuntimeError): pass
 class SourceConflictError(SourceWriteError): pass
@@ -55,6 +55,23 @@ class SourceWriteService:
                 except OSError: pass
         finally:
             if temporary.exists(): temporary.unlink()
+    @staticmethod
+    def _create_bytes_exclusive(path: Path, data: bytes, mode: int):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(data); stream.flush(); os.fsync(stream.fileno())
+            os.chmod(path, mode)
+            if os.name != "nt":
+                parent = os.open(path.parent, os.O_RDONLY)
+                try: os.fsync(parent)
+                finally: os.close(parent)
+        except Exception:
+            try: path.unlink()
+            except OSError: pass
+            raise
+
     def _post_commit(self, path, transaction, origin, candidate, encoding, newline, maintenance_warnings=()):
         warnings = list(maintenance_warnings)
         try:
@@ -83,8 +100,13 @@ class SourceWriteService:
     def save_document(self, request: SaveRequest) -> SaveResult:
         document=request.document; path=Path(document.path).resolve()
         validate(request.text, str(path))
-        if changed(document): raise SourceConflictError("The file changed on disk. Reload it before saving.")
-        before=path.read_bytes(); after=request.text.encode(document.encoding); mode=stat.S_IMODE(path.stat().st_mode)
+        try:
+            stable = stable_read(path)
+        except (FileNotFoundError, OSError) as exc:
+            raise SourceConflictError(f"The file could not be read stably: {exc}") from exc
+        if stable.signature != document.signature:
+            raise SourceConflictError("The file changed on disk. Reload it before saving.")
+        before=stable.data; after=request.text.encode(document.encoding); mode=stable.mode
         directory, manifest, after_snapshot=self.journal.record_write(path,before,after,operation=str(request.operation),description=request.description,encoding=document.encoding,newline=document.newline,mode=mode,location_before=request.location_before,location_after=request.location_after)
         try: self._replace_bytes(path,after,mode)
         except Exception as exc:
@@ -103,7 +125,11 @@ class SourceWriteService:
         directory,manifest,after_snapshot=self.journal.record_write(path,b"",data,operation=str(operation),description=description,encoding=encoding,newline=newline,mode=0o644,location_before=location_before,location_after=location_after)
         manifest["files"][0]["before_exists"]=False; self.journal.update_prepared(directory,manifest)
         try:
-            path.parent.mkdir(parents=True,exist_ok=True); self._replace_bytes(path,data,0o644)
+            self._create_bytes_exclusive(path,data,0o644)
+        except FileExistsError as exc:
+            message = f"{path} was created by another process"
+            self.journal.mark_failed(directory,manifest,message)
+            raise SourceConflictError(message) from exc
         except Exception as exc:
             self.journal.mark_failed(directory,manifest,str(exc)); raise
         try: transaction, maintenance_warnings=self.journal.finalize(directory,manifest,after_snapshot,data)
