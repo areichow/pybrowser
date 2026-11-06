@@ -24,3 +24,16 @@ def test_digest_detects_same_size_change(tmp_path):
     document = read_document(path)
     path.write_text("A=2\n")
     assert changed(document)
+
+def test_read_document_text_and_signature_come_from_one_stable_read(tmp_path, monkeypatch):
+    import hashlib
+    import pybrowser.parser as parser
+    from pybrowser.saving import StableFileRead
+    path = tmp_path / 'app.py'; path.write_text('A = 1\n')
+    data = b'A = 1\n'
+    signature = (123, len(data), hashlib.sha256(data).hexdigest())
+    monkeypatch.setattr(parser, 'stable_read', lambda _path: StableFileRead(data, signature, 0o644))
+    path.write_text('A = 9\n')
+    document = parser.read_document(path)
+    assert document.text == 'A = 1\n'
+    assert document.signature == signature

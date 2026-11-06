@@ -127,3 +127,24 @@ def test_create_file_never_replaces_concurrently_created_target(tmp_path, monkey
     with pytest.raises(SourceConflictError): service.create_file(path,b'VALUE = 2\n')
     assert path.read_text() == 'EXTERNAL = 1\n'
     assert journal.transactions()[0].status == 'failed'
+
+def test_final_signature_check_refuses_change_during_preparation(tmp_path, monkeypatch):
+    import pybrowser.source_write_service as module
+    world,journal,service,notifications=service_for(tmp_path)
+    path=world/'app.py'; path.write_text('A = 1\n'); document=read_document(path)
+    original=service._replace_bytes
+    def changed_before_replace(target,data,mode,expected):
+        target.write_text('EXTERNAL = 9\n')
+        return original(target,data,mode,expected)
+    monkeypatch.setattr(service,'_replace_bytes',changed_before_replace)
+    with pytest.raises(SourceConflictError): service.save_document(SaveRequest(document,'A = 2\n','save_file','save'))
+    assert path.read_text() == 'EXTERNAL = 9\n'
+    assert journal.transactions()[0].status == 'failed'
+
+
+def test_cooperative_path_lock_rejects_second_writer(tmp_path):
+    world,journal,service,notifications=service_for(tmp_path)
+    path=world/'app.py'; path.write_text('A = 1\n')
+    with service._path_lock(path):
+        with pytest.raises(SourceConflictError):
+            SourceWriteService(journal)._path_lock(path).__enter__()

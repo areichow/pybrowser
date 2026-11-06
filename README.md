@@ -360,3 +360,8 @@ Revision 12.8 restores all Browser structural commands by removing the obsolete 
 #### Revision 12.9 transient recovery and stable write conflicts
 
 Revision 12.9 recovers interrupted undoing, redoing, and pruning states after restart. Structural History can safely roll back or finalize claimed undo/redo transitions according to current file hashes, while ambiguous mixed states require review. Pending deletion records prevent reconciliation from recreating successfully pruned transaction directories. SourceWriteService now obtains one stable byte image and signature for conflict detection and journaling, and new-file creation uses O_EXCL no-replace semantics. Status changes merge from the current authoritative SQLite row, multiple post-commit warnings are retained, and recovery preference documentation is complete.
+
+
+#### Revision 12.10 final document-load and recovery-authority hardening
+
+Document loading now derives decoded text, scopes, and file signature from one stable byte image. Existing-file saves use a cooperative per-path lock plus a final expected-signature check immediately before replacement. Pinning and established journal transitions rebuild portable JSON from authoritative SQLite state. Interrupted undo and redo transactions require complete after snapshots, damaged automatic recovery actions are disabled, and recovery controls use direction-specific labels. PySide6 offscreen regression tests cover duplicate-member selection and rename behavior.

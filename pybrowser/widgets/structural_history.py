@@ -94,11 +94,17 @@ class StructuralHistoryWindow(QMainWindow):
         incomplete = tx.status in {"prepared", "committing", "undoing", "redoing"}
         abort_state = "current equals before"
         finalize_state = "current equals after"
+        abort_label, finalize_label = "Mark Not Applied", "Finalize Save"
         if tx.status == "undoing":
             abort_state, finalize_state = "current equals after", "current equals before"
-        self.abort_button.setEnabled(incomplete and state_values == {abort_state})
-        self.finalize_button.setEnabled(incomplete and state_values == {finalize_state})
-        self.review_button.setEnabled(incomplete and state_values not in ({abort_state}, {finalize_state}))
+            abort_label, finalize_label = "Cancel Interrupted Undo", "Finalize Undo"
+        elif tx.status == "redoing":
+            abort_label, finalize_label = "Cancel Interrupted Redo", "Finalize Redo"
+        self.abort_button.setText(abort_label); self.finalize_button.setText(finalize_label)
+        automatic = incomplete and not tx.damaged
+        self.abort_button.setEnabled(automatic and state_values == {abort_state})
+        self.finalize_button.setEnabled(automatic and state_values == {finalize_state})
+        self.review_button.setEnabled(incomplete and (tx.damaged or state_values not in ({abort_state}, {finalize_state})))
         for button in (self.abort_button, self.finalize_button, self.review_button):
             button.setVisible(incomplete)
         if files:

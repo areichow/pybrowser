@@ -209,3 +209,8 @@ Completed structural command regression repair, duplicate-selection safety, sche
 #### Revision 12.9 final transient-state and conflict hardening
 
 Interrupted undoing and redoing claims now have restart dispositions based on before/after hashes. Pruning uses durable pending-deletion records and startup completion. Existing-file saves use stable read-and-verify snapshots, new-file writes use exclusive no-replace creation, metadata transitions merge from authoritative SQLite state, and multiple post-commit warnings are preserved.
+
+
+#### Revision 12.10 final 12A-12C freeze
+
+Document loads and saves now use stable byte images, cooperative path locks, and a final pre-replacement signature check. Established transaction transitions are SQLite-first, portable mirrors are rebuilt from authoritative rows, transient history damage requires complete snapshots, and recovery controls identify interrupted save, undo, and redo actions explicitly.

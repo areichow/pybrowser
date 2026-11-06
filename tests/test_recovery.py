@@ -450,3 +450,24 @@ def test_post_commit_warnings_accumulate(tmp_path):
     tx=journal.mark_post_commit_error(tx,'first')
     tx=journal.mark_post_commit_error(tx,'second')
     assert tx.post_commit_error == 'first\nsecond'
+
+def test_pinning_stale_transaction_writes_authoritative_json(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    journal=RecoveryJournal(world,tmp_path/'history')
+    stale=SourceWriteService(journal).save_document(SaveRequest(read_document(path),'A = 2\n','save_file','save')).transaction
+    current=journal.mark_post_commit_error(stale,'new warning')
+    pinned=journal.set_pinned(stale,True)
+    mirror=json.loads((stale.directory/'manifest.json').read_text())
+    assert pinned.pinned and mirror['pinned'] is True
+    assert mirror['post_commit_error'] == 'new warning'
+
+
+def test_history_transient_state_requires_after_snapshot(tmp_path):
+    from pybrowser.recovery import TransactionStatus
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    history=tmp_path/'history'; journal=RecoveryJournal(world,history)
+    tx=SourceWriteService(journal).save_document(SaveRequest(read_document(path),'A = 2\n','save_file','save')).transaction
+    claimed=journal.set_status(tx,TransactionStatus.UNDOING.value,expected_statuses={'committed'})
+    journal.snapshot_path(claimed,'after').unlink()
+    reopened=RecoveryJournal(world,history)
+    assert reopened.get(tx.transaction_id).damaged

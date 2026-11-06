@@ -7,7 +7,7 @@ from pathlib import Path
 import libcst as cst
 from libcst.metadata import MetadataWrapper, PositionProvider
 from .model import Document, Kind, Member, Scope, Span
-from .saving import file_signature
+from .saving import stable_read
 from .conventions import canonical_category
 
 CATEGORY_RE = re.compile(r"^[ \t]*#[ \t]*category[ \t]*:[ \t]*(?P<name>[^\r\n#]+?)[ \t]*$", re.I)
@@ -221,10 +221,10 @@ def build_index(path: Path, text: str) -> tuple[Scope, ...]:
 
 def read_document(path: Path) -> Document:
     path = path.resolve()
-    raw = path.read_bytes()
-    encoding, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
-    text = raw.decode(encoding)
-    return Document(path, text, encoding, "\r\n" if "\r\n" in text else "\n", text.endswith(("\n", "\r")), file_signature(path), build_index(path, text))
+    stable = stable_read(path)
+    encoding, _ = tokenize.detect_encoding(io.BytesIO(stable.data).readline)
+    text = stable.data.decode(encoding)
+    return Document(path, text, encoding, "\r\n" if "\r\n" in text else "\n", text.endswith(("\n", "\r")), stable.signature, build_index(path, text))
 
 def replacement(document: Document, member: Member, new: str) -> str:
     old = document.source(member)

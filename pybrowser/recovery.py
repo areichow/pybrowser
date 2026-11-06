@@ -432,6 +432,7 @@ class RecoveryJournal:
         require_after = status in {
             TransactionStatus.COMMITTED.value, TransactionStatus.UNDONE.value,
             TransactionStatus.REDONE.value, TransactionStatus.SUPERSEDED.value,
+            TransactionStatus.UNDOING.value, TransactionStatus.REDOING.value,
         }
         for item in manifest.get("files", []):
             before_relative = item.get("before_snapshot")
@@ -507,6 +508,14 @@ class RecoveryJournal:
                 values.append(RecoveryTransaction(Path(row["transaction_directory"]), self._manifest_from_row(row, files)))
         return tuple(values)
 
+    def _authoritative_transaction(self, transaction_id, db=None):
+        owns = db is None; connection = db or self._connect()
+        try:
+            row = connection.execute("SELECT * FROM transactions WHERE id = ?", (transaction_id,)).fetchone()
+            return self._transaction_from_row(connection, row)
+        finally:
+            if owns: connection.close()
+
     def record_write(self, path: Path, before: bytes, after: bytes, *, operation="save_file",
                      description="Save file", encoding="utf-8", newline="\n",
                      location_before=None, location_after=None, mode=None, writer=None):
@@ -540,9 +549,10 @@ class RecoveryJournal:
         _json_write(directory / "manifest.json", manifest)
         self._upsert_manifest(directory, manifest)
         manifest["status"] = "committing"
-        _json_write(directory / "manifest.json", manifest)
         self._upsert_manifest(directory, manifest)
-        return directory, manifest, after_path
+        transaction = self.get(txid)
+        _json_write(directory / "manifest.json", transaction.manifest)
+        return directory, dict(transaction.manifest), after_path
 
     def update_prepared(self, directory: Path, manifest: dict):
         """Persist metadata changes made after preparation but before disk commit."""
@@ -554,9 +564,10 @@ class RecoveryJournal:
         _write_durable_bytes(after_path, after)
         manifest["status"] = TransactionStatus.COMMITTED.value
         manifest["committed_at"] = datetime.now(timezone.utc).isoformat()
-        _json_write(directory / "manifest.json", manifest)
         self._upsert_manifest(directory, manifest)
-        transaction = RecoveryTransaction(directory, manifest)
+        transaction = self.get(manifest["transaction_id"])
+        _json_write(directory / "manifest.json", transaction.manifest)
+        manifest.clear(); manifest.update(transaction.manifest)
         warnings = []
         for label, action in (
             ("Redo history cleanup", lambda: self.supersede_redo_branch(excluding=manifest["transaction_id"])),
@@ -574,21 +585,24 @@ class RecoveryJournal:
     def mark_failed(self, directory: Path, manifest: dict, message: str):
         manifest["status"] = "failed"
         manifest["error"] = message
-        _json_write(directory / "manifest.json", manifest)
         self._upsert_manifest(directory, manifest)
+        current = self.get(manifest["transaction_id"])
+        _json_write(directory / "manifest.json", current.manifest)
+        manifest.clear(); manifest.update(current.manifest)
         callback = getattr(self, "on_change", None)
         if callback:
             callback()
 
     def set_pinned(self, transaction: RecoveryTransaction, pinned: bool):
-        manifest = dict(transaction.manifest); manifest["pinned"] = bool(pinned)
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             cursor = db.execute("UPDATE transactions SET pinned = ? WHERE id = ?", (int(bool(pinned)), transaction.transaction_id))
             if cursor.rowcount != 1:
                 raise RecoveryConflictError("The transaction no longer exists.", transaction)
-        _json_write(transaction.directory / "manifest.json", manifest)
+            current = self._authoritative_transaction(transaction.transaction_id, db)
+        _json_write(current.directory / "manifest.json", current.manifest)
         self.emit_change()
+        return current
 
     def snapshot_path(self, transaction: RecoveryTransaction, side: str, file_index=0):
         key = "before_snapshot" if side == "before" else "after_snapshot"
