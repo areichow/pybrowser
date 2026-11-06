@@ -178,3 +178,8 @@ A full LSP client remains a possible later feature, but it is intentionally defe
 ### Deferred write / image-style commit mode
 
 A future phase will add a preference choosing between **Write through immediately** and **Stage in journal until commit**. Staged mode requires a World overlay filesystem so every Browser, File View, semantic index, type check, query, and runtime launch reads the staged after-snapshot rather than stale disk content. Planned File commands are **Commit All Changes** and **Commit Changes...**, with the latter presenting a transaction/file summary and allowing selective commits. Quit and World switching must prompt to commit, retain staged changes, or discard them. This is intentionally deferred until the shared `SourceWriteService` and virtual World overlay are implemented; merely skipping `os.replace()` in the current architecture would cause indexers and other windows to read inconsistent source.
+
+
+### Revision 12.1 SQLite journal index
+
+`journal.sqlite3` is now the authoritative metadata index while complete source snapshots and portable per-transaction `manifest.json` files remain on the filesystem. The database uses foreign keys, WAL mode, `synchronous=FULL`, and a 5000 ms busy timeout. On World open, PyBrowser imports Revision 12.0 JSON-only transactions, reconciles rows with transaction directories, and marks transactions damaged when required snapshot files are missing. This schema includes `committed_to_disk` so the future staged overlay can query pending changes without another metadata migration.

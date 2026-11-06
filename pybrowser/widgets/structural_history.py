@@ -44,7 +44,8 @@ class StructuralHistoryWindow(QMainWindow):
         self.list.clear()
         for tx in self.transactions:
             pin = "📌 " if tx.pinned else ""
-            self.list.addItem(f"{pin}{tx.timestamp[:19]}  [{tx.status}]  {tx.description}")
+            damaged = " ⚠ damaged" if tx.damaged else ""
+            self.list.addItem(f"{pin}{tx.timestamp[:19]}  [{tx.status}{damaged}]  {tx.description}")
         if self.transactions: self.list.setCurrentRow(0)
         else: self.detail.setText("No recovery transactions for this World"); self.diff.clear()
 

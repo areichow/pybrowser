@@ -51,3 +51,82 @@ def test_journaled_new_file_has_empty_before_snapshot(tmp_path):
     assert path.exists()
     assert journal.snapshot_path(tx, "before").read_bytes() == b""
     assert journal.snapshot_path(tx, "after").read_bytes() == b'"""Package."""\n'
+
+
+def test_sqlite_is_authoritative_index_with_durable_pragmas(tmp_path):
+    import sqlite3
+    world = tmp_path / "world"; world.mkdir()
+    path = world / "app.py"; path.write_text("A = 1\n")
+    journal = RecoveryJournal(world, tmp_path / "history")
+    tx = journaled_atomic_write(read_document(path), "A = 2\n", journal, operation="save_member")
+    assert journal.database_path.exists()
+    settings = journal.database_settings()
+    assert settings["journal_mode"].casefold() == "wal"
+    assert settings["synchronous"] == 2  # SQLITE_FULL
+    assert settings["foreign_keys"] == 1
+    assert settings["busy_timeout"] == 5000
+    with sqlite3.connect(journal.database_path) as db:
+        assert db.execute("SELECT status FROM transactions WHERE id = ?", (tx.transaction_id,)).fetchone()[0] == "committed"
+        assert db.execute("SELECT absolute_path FROM transaction_files WHERE transaction_id = ?", (tx.transaction_id,)).fetchone()[0] == str(path.resolve())
+
+
+def test_legacy_json_manifest_is_imported_into_sqlite(tmp_path):
+    import json
+    world = tmp_path / "world"; world.mkdir()
+    path = world / "app.py"; path.write_text("A = 2\n")
+    history_root = tmp_path / "history"
+    journal = RecoveryJournal(world, history_root)
+    tx_dir = journal.root / "legacy-transaction"
+    before = tx_dir / "before" / "app.py"; after = tx_dir / "after" / "app.py"
+    before.parent.mkdir(parents=True); after.parent.mkdir(parents=True)
+    before.write_text("A = 1\n"); after.write_text("A = 2\n")
+    manifest = {
+        "format": 1, "transaction_id": "legacy-transaction",
+        "timestamp": "2026-11-06T10:00:00+00:00", "operation": "save_member",
+        "description": "Legacy save", "status": "committed", "pinned": False,
+        "world_root": str(world.resolve()), "files": [{
+            "path": str(path.resolve()), "relative_path": "app.py", "encoding": "utf-8",
+            "newline": "LF", "mode": 420,
+            "before_sha256": sha256_bytes(b"A = 1\n"), "after_sha256": sha256_bytes(b"A = 2\n"),
+            "before_snapshot": "before/app.py", "after_snapshot": "after/app.py",
+        }],
+    }
+    (tx_dir / "manifest.json").write_text(json.dumps(manifest))
+    reopened = RecoveryJournal(world, history_root)
+    imported = next(item for item in reopened.transactions() if item.transaction_id == "legacy-transaction")
+    assert imported.description == "Legacy save"
+    assert not imported.damaged
+
+
+def test_reconcile_marks_missing_snapshot_as_damaged(tmp_path):
+    import json
+    world = tmp_path / "world"; world.mkdir()
+    path = world / "app.py"; path.write_text("A = 1\n")
+    journal = RecoveryJournal(world, tmp_path / "history")
+    tx_dir = journal.root / "damaged-transaction"; tx_dir.mkdir()
+    manifest = {
+        "format": 1, "transaction_id": "damaged-transaction",
+        "timestamp": "2026-11-06T11:00:00+00:00", "operation": "save_file",
+        "description": "Damaged save", "status": "committed", "pinned": False,
+        "world_root": str(world.resolve()), "files": [{
+            "path": str(path.resolve()), "relative_path": "app.py", "encoding": "utf-8",
+            "newline": "LF", "before_sha256": "x", "after_sha256": "y",
+            "before_snapshot": "before/app.py", "after_snapshot": "after/app.py",
+        }],
+    }
+    (tx_dir / "manifest.json").write_text(json.dumps(manifest))
+    reopened = RecoveryJournal(world, tmp_path / "history")
+    damaged = next(item for item in reopened.transactions() if item.transaction_id == "damaged-transaction")
+    assert damaged.damaged
+
+
+def test_sqlite_pinning_and_incomplete_queries_stay_in_sync(tmp_path):
+    world = tmp_path / "world"; world.mkdir()
+    path = world / "app.py"; path.write_text("A = 1\n")
+    journal = RecoveryJournal(world, tmp_path / "history")
+    directory, manifest, _after = journal.record_write(path, path.read_bytes(), b"A = 2\n")
+    tx = journal.incomplete()[0]
+    journal.set_pinned(tx, True)
+    reloaded = next(item for item in journal.transactions() if item.transaction_id == tx.transaction_id)
+    assert reloaded.pinned
+    assert reloaded.status == "committing"

@@ -303,3 +303,10 @@ Every source write now creates a durable recovery transaction in the platform us
 **File > Structural History...** (`Ctrl+Shift+H`) opens a modeless history window with newest-first transactions, status, disk-state comparison, hashes, a unified diff, pin/unpin controls, and **Restore Before As...** / **Restore After As...**. Opening a World scans for interrupted `prepared` or `committing` transactions and offers to open Structural History. Preferences control transaction count, minimum retention days, and maximum storage in MB. Pinned and incomplete transactions are never pruned automatically.
 
 Image-style deferred disk commits are documented in `UNDO_PLAN.md` but intentionally deferred until a World overlay and consolidated `SourceWriteService` exist. Immediate writes remain the only mode in Revision 12.0.
+
+
+## Revision 12.1 SQLite recovery index
+
+Recovery metadata is now indexed in `journal.sqlite3` per World. SQLite is authoritative for Structural History ordering, status queries, incomplete-transaction scans, pinning, retention bookkeeping, and affected-file lookup. Full before/after source snapshots and `manifest.json` remain ordinary files so every transaction retains a portable recovery record.
+
+The database enables `PRAGMA foreign_keys=ON`, `journal_mode=WAL`, `synchronous=FULL`, and `busy_timeout=5000`. Tables separate transactions from affected files and include indexes for timestamp, status, disk-commit state, and absolute path. Opening a World imports existing Revision 12.0 JSON transactions into SQLite, reconciles database rows with manifests, and marks entries damaged when snapshot files are absent. The schema includes `committed_to_disk` for the later image-style staged-commit overlay, but Revision 12.1 continues writing through to disk immediately.
