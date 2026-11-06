@@ -365,3 +365,8 @@ Revision 12.9 recovers interrupted undoing, redoing, and pruning states after re
 #### Revision 12.10 final document-load and recovery-authority hardening
 
 Document loading now derives decoded text, scopes, and file signature from one stable byte image. Existing-file saves use a cooperative per-path lock plus a final expected-signature check immediately before replacement. Pinning and established journal transitions rebuild portable JSON from authoritative SQLite state. Interrupted undo and redo transactions require complete after snapshots, damaged automatic recovery actions are disabled, and recovery controls use direction-specific labels. PySide6 offscreen regression tests cover duplicate-member selection and rename behavior.
+
+
+#### Revision 12.11 duplicate selection and Qt teardown safety
+
+Duplicate Member now resolves the requested callable occurrence after reload and explicitly opens that row before selecting its identifier. Workspace window destruction no longer captures a deleted Python wrapper, and Window-menu rebuild callbacks disconnect when their owning window is destroyed. Qt object validity guards prevent late shutdown signals from touching deleted QMenu objects.

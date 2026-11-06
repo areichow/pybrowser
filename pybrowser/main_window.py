@@ -1566,9 +1566,15 @@ class MainWindow(QMainWindow):
             self.index_cache.invalidate(path)
             self._open_module(path, (edit.scope, edit.category, edit.preferred_name), fallback_row=fallback_row)
             if edit.preferred_name and occurrence:
-                matches = [index for index, member in enumerate(self._visible()) if member.label.startswith(edit.preferred_name)]
+                preferred = callable_name_from_label(edit.preferred_name)
+                matches = [
+                    index for index, member in enumerate(self._visible())
+                    if callable_name_from_label(member.label) == preferred
+                ]
                 if occurrence < len(matches):
-                    self.members.setCurrentRow(matches[occurrence])
+                    target_row = matches[occurrence]
+                    self.members.setCurrentRow(target_row)
+                    self._member(target_row)
             self.statusBar().showMessage(description, 5000)
             if description == "Duplicated Member" and self.member:
                 self._select_member_identifier()

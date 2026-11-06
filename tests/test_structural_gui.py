@@ -3,7 +3,6 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import pytest
 pytest.importorskip('PySide6')
 from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QTextCursor
 from pybrowser.main_window import MainWindow
 from pybrowser.workspace import Workspace
 
@@ -28,7 +27,8 @@ def test_duplicate_then_rename_changes_only_inserted_method(tmp_path, app):
     _select_member(window,'App','run'); app.processEvents()
     window.duplicate_current_member(); app.processEvents()
     assert path.read_text().count('def run(self):') == 2
-    assert window.members.currentRow() == 1
+    assert window.members.currentRow() == window.members.count() - 1
+    assert window.member.span.start == path.read_text().rindex('    def run(self):')
     cursor=window.editor.textCursor()
     assert cursor.hasSelection() and cursor.selectedText() == 'run'
     cursor.insertText('run_copy'); window.editor.setTextCursor(cursor)
@@ -38,4 +38,5 @@ def test_duplicate_then_rename_changes_only_inserted_method(tmp_path, app):
     assert source.count('def run_copy(self):') == 1
     operations=[tx.operation for tx in reversed(workspace.journal.transactions())]
     assert operations[-2:] == ['duplicate_member','save_member']
-    window.close()
+    workspace.unregister(window)
+    window.close(); window.deleteLater(); app.processEvents()

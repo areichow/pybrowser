@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, Signal
+from PySide6.QtCore import QObject, QCoreApplication, QSettings, Signal
 from PySide6.QtWidgets import QApplication
 
 from .recovery import RecoveryConflictError, RecoveryJournal
@@ -56,7 +56,7 @@ class Workspace(QObject):
         self.windows.append(window)
         if kind == "browser":
             self.active_browser = window
-        window.destroyed.connect(lambda: self._remove(window))
+        window.destroyed.connect(self._window_destroyed)
         self.windows_changed.emit()
 
     def open_windows(self):
@@ -133,10 +133,19 @@ class Workspace(QObject):
         self.history_changed.emit()
         return result, changed_paths
 
-    def _remove(self, window):
+    def unregister(self, window, emit=True):
         if window in self.windows:
             self.windows.remove(window)
         if self.active_browser is window:
             self.active_browser = next((item for item in reversed(self.windows)
                                         if getattr(item, "window_kind", "") == "browser"), None)
-        self.windows_changed.emit()
+        if emit and not QCoreApplication.closingDown():
+            self.windows_changed.emit()
+
+    def _window_destroyed(self, destroyed_object=None):
+        self.windows = [item for item in self.windows if item is not destroyed_object]
+        if self.active_browser is destroyed_object:
+            self.active_browser = next((item for item in reversed(self.windows)
+                                        if getattr(item, "window_kind", "") == "browser"), None)
+        if not QCoreApplication.closingDown():
+            self.windows_changed.emit()

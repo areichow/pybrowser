@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QEvent, Qt
+from PySide6.QtCore import QObject, QEvent, Qt, Slot
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox
+from shiboken6 import isValid
 
 
 class MenuKeyboardFilter(QObject):
@@ -54,10 +55,14 @@ def add_window_menu(menu_bar, window, workspace):
     menu = menu_bar.addMenu("&Window")
     menu.setObjectName("windowMenu")
 
+    @Slot()
     def rebuild():
+        if not isValid(window) or not isValid(menu):
+            return
         menu.clear()
-        windows = workspace.open_windows()
-        for number, target in enumerate(windows, 1):
+        for number, target in enumerate(workspace.open_windows(), 1):
+            if not isValid(target):
+                continue
             prefix = f"&{number} " if number <= 9 else f"{number} "
             title = target.windowTitle().replace("[*]", "").strip() or target.__class__.__name__
             action = menu.addAction(prefix + title)
@@ -66,8 +71,13 @@ def add_window_menu(menu_bar, window, workspace):
             action.setProperty("window_number", number)
             action.triggered.connect(lambda checked=False, item=target: workspace.activate_window(item))
 
+    def disconnect_rebuild(_object=None):
+        try: workspace.windows_changed.disconnect(rebuild)
+        except (RuntimeError, TypeError): pass
+
     menu.aboutToShow.connect(rebuild)
     workspace.windows_changed.connect(rebuild)
+    window.destroyed.connect(disconnect_rebuild)
     rebuild()
     return menu
 

@@ -143,3 +143,17 @@ def test_duplicate_success_selects_identifier_for_rename():
     assert 'def _select_member_identifier' in source
     assert 'self._select_member_identifier()' in source
     assert 'Rename the selected copy and press Ctrl+S.' in source
+
+
+def test_window_menu_disconnects_before_owner_deletion():
+    source = Path("pybrowser/windowing.py").read_text()
+    assert "from shiboken6 import isValid" in source
+    assert "workspace.windows_changed.disconnect(rebuild)" in source
+    assert "window.destroyed.connect(disconnect_rebuild)" in source
+    assert "if not isValid(window) or not isValid(menu)" in source
+
+def test_workspace_destroy_callback_does_not_capture_deleted_window_wrapper():
+    source = Path("pybrowser/workspace.py").read_text()
+    assert "window.destroyed.connect(self._window_destroyed)" in source
+    assert "lambda: self._remove(window)" not in source
+    assert "QCoreApplication.closingDown()" in source
