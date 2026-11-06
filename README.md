@@ -287,3 +287,10 @@ During a Member drag, the Category under the pointer receives a bright blue `#2f
 Native semantic analysis now recognizes the names supplied by Python's module execution environment: `__name__`, `__file__`, `__cached__`, `__package__`, `__loader__`, `__spec__`, `__builtins__`, `__annotations__`, `__doc__`, and the built-in constant `__debug__`. These names are valid when referenced from functions as module globals and no longer produce `possibly-undefined-local` hints. Special method names such as `__repr__` and `__add__` are definitions or attributes rather than automatically bound bare globals, so arbitrary dunder spellings are not globally suppressed.
 
 `INDENTATION_PLAN.md` specifies a reversible Member-editor projection that displays class and nested-class Members at column zero, records the exact source prefix, reapplies it before full-module validation, and leaves File View literal and unchanged. The plan intentionally precedes implementation because indentation projection touches the save boundary and requires round-trip coverage for tabs, decorators, nested classes, multiline strings, CRLF, encodings, and external-change protection.
+
+
+#### Revision 11.10 reversible Member dedentation
+
+The Browser Member editor and editable query windows now display class and nested-class Members at column zero through a reversible `MemberProjection`. PyBrowser records the exact source prefix, removes only that prefix from each non-empty displayed line, and reapplies it before the existing full-module LibCST/AST validation and atomic save. Module-level Members remain unchanged because their prefix is empty. Decorators, async definitions, multiline signatures, nested functions, continuation indentation, tabs, CRLF, blank lines, encoding, and unrelated source remain intact.
+
+**Edit > Preferences > Dedent Member editor** controls the behavior and defaults on. A Member whose non-empty lines do not share the exact structural prefix is treated as unsafe and shown literally rather than guessed. File View remains a literal whole-file editor and is never projected.

@@ -6,6 +6,7 @@ from .editor import Editor
 from ..parser import ParseError, read_document, replacement, validate
 from ..saving import atomic_write, changed
 from ..windowing import install_window_commands
+from ..member_projection import MemberProjection, project_member, restore_member
 
 
 class CodeQueryDialog(QMainWindow):
@@ -20,6 +21,7 @@ class CodeQueryDialog(QMainWindow):
         self.results_data = list(results)
         self.current_document = None
         self.current_member = None
+        self.member_projection = MemberProjection("", "", False, "No Member selected")
         self.setWindowTitle(f"{title} [{len(self.results_data)}][*]")
         self.resize(900, 650)
         self.summary = QLabel(f"{len(self.results_data)} result(s)")
@@ -71,7 +73,12 @@ class CodeQueryDialog(QMainWindow):
             self.current_document = read_document(result.module)
             scope = next((s for s in self.current_document.scopes if s.name == result.scope), None)
             self.current_member = next((m for m in scope.members if not m.synthetic and m.label == result.label), None) if scope else None
-            source = self.current_document.source(self.current_member) if self.current_member else result.source
+            if self.current_member:
+                self.member_projection = project_member(self.current_document, self.current_member, True)
+                source = self.member_projection.text
+            else:
+                self.member_projection = MemberProjection(result.source, "", False, "No editable Member")
+                source = result.source
             self.preview.setPlainText(source); self.preview.document().setModified(False)
         except OSError as exc: QMessageBox.warning(self, "Cannot load source", str(exc))
 
@@ -79,7 +86,8 @@ class CodeQueryDialog(QMainWindow):
         if not self.current_document or not self.current_member: return
         if changed(self.current_document):
             QMessageBox.warning(self, "File changed", "The file changed in another window. Select the result again before saving."); return
-        candidate = replacement(self.current_document, self.current_member, self.preview.toPlainText())
+        restored_source = restore_member(self.member_projection, self.preview.toPlainText())
+        candidate = replacement(self.current_document, self.current_member, restored_source)
         try:
             validate(candidate, str(self.current_document.path)); atomic_write(self.current_document, candidate)
             self.current_document = read_document(self.current_document.path)
@@ -90,7 +98,8 @@ class CodeQueryDialog(QMainWindow):
     def abandon(self):
         if not self.current_document or not self.current_member:
             return
-        self.preview.setPlainText(self.current_document.source(self.current_member))
+        self.member_projection = project_member(self.current_document, self.current_member, True)
+        self.preview.setPlainText(self.member_projection.text)
         self.preview.document().setModified(False)
 
     def _navigate(self):

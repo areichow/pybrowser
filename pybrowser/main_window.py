@@ -39,6 +39,7 @@ from .windowing import install_window_commands
 from .semantic import analyze_source
 from .semantic_queries import references_in_world
 from .diagnostic_aggregation import DiagnosticAggregation, decorate
+from .member_projection import MemberProjection, project_member, restore_member
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
 from PySide6.QtWidgets import QTextEdit
@@ -94,6 +95,7 @@ class MainWindow(QMainWindow):
         self.search_index = -1
         self.search_source = ""
         self.replace_dialog = None
+        self.member_projection = MemberProjection("", "", False, "No Member selected")
         self.resize(1400, 900)
         self.setWindowTitle("PyBrowser")
         self._ui()
@@ -391,6 +393,7 @@ class MainWindow(QMainWindow):
             "tab_width": self.settings.value("editor/tabWidth", 4, int),
             "show_whitespace": self.settings.value("editor/showWhitespace", False, bool),
             "theme": self.settings.value("appearance/theme", "dark", str),
+            "dedent_members": self.settings.value("editor/dedentMembers", True, bool),
         }
 
     def _apply_editor_preferences(self):
@@ -414,7 +417,10 @@ class MainWindow(QMainWindow):
         self.settings.setValue("editor/tabWidth", values["tab_width"])
         self.settings.setValue("editor/showWhitespace", values["show_whitespace"])
         self.settings.setValue("appearance/theme", values["theme"])
+        self.settings.setValue("editor/dedentMembers", values["dedent_members"])
         self._apply_editor_preferences()
+        if self.member and not self.editor.document().isModified():
+            self._load_member(self.member)
 
     def show_replace_dialog(self):
         selected = self.editor.textCursor().selectedText()
@@ -475,6 +481,7 @@ class MainWindow(QMainWindow):
         self.search_index = -1
         self.search_source = ""
         self.replace_dialog = None
+        self.member_projection = MemberProjection("", "", False, "No Member selected")
         self._update_match_indicator()
 
     def _search_scope_changed(self):
@@ -498,6 +505,7 @@ class MainWindow(QMainWindow):
             self.search_matches = ()
             self.search_source = ""
         self.replace_dialog = None
+        self.member_projection = MemberProjection("", "", False, "No Member selected")
         self.search_index = 0 if self.search_matches else -1
         self._show_search_match()
 
@@ -633,7 +641,8 @@ class MainWindow(QMainWindow):
         cursor_position = self.editor.textCursor().position()
         self.loading = True
         try:
-            self.editor.setPlainText(self.doc.source(self.member))
+            self.member_projection = project_member(self.doc, self.member, self._preferences()["dedent_members"])
+            self.editor.setPlainText(self.member_projection.text)
             self.editor.document().setModified(False)
             cursor = self.editor.textCursor()
             cursor.setPosition(min(cursor_position, len(self.editor.toPlainText())))
@@ -1137,13 +1146,15 @@ class MainWindow(QMainWindow):
         previous_loading = self.loading
         self.loading = True
         if member:
-            self.editor.setPlainText(self.doc.source(member))
+            self.member_projection = project_member(self.doc, member, self._preferences()["dedent_members"])
+            self.editor.setPlainText(self.member_projection.text)
             self.editor.document().setModified(False)
             summary = self._diagnostics().member(self.doc.path, member)
             suffix = f"  {summary.glyph}" if summary.count else ""
             self.crumb.setText(f"{self.doc.path.name} > {display_scope(member.scope)} > {member.category} > {member.label}{suffix}")
             self.crumb.setToolTip(summary.tooltip(member.label) if summary.count else member.tooltip or member.label)
         else:
+            self.member_projection = MemberProjection("", "", False, "No Member selected")
             self.editor.clear()
         self.loading = previous_loading
         self.setWindowModified(False)
@@ -1662,7 +1673,8 @@ class MainWindow(QMainWindow):
         scope = self.member.scope
         category = self.member.category
         row = self.members.currentRow()
-        candidate = replacement(self.doc, self.member, self.editor.toPlainText())
+        restored_source = restore_member(self.member_projection, self.editor.toPlainText())
+        candidate = replacement(self.doc, self.member, restored_source)
         try:
             validate(candidate, str(path))
             atomic_write(self.doc, candidate)

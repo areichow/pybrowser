@@ -114,6 +114,10 @@ For tabs, visual columns and character offsets differ. Diagnostic navigation sho
 - Syntax error in projected text
 - External modification between load and save
 
+## Implementation status
+
+Implemented in Revision 11.10 for the Browser Member editor and editable query windows. The preference **Dedent Member editor** defaults on. File View remains literal. Unsafe mixed-prefix Members automatically fall back to literal display and saving.
+
 ## Rollout
 
 Implement behind a preference named **Dedent Member editor** and default it on only after projection round-trip tests prove:
