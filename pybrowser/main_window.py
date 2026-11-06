@@ -984,7 +984,7 @@ class MainWindow(QMainWindow):
         if self.doc and Path(path) == self.doc.path and not self.editor.document().isModified():
             self.statusBar().showMessage("Current module changed outside PyBrowser; reloading", 5000)
             location = (self.member.scope, self.member.category, self.member.label) if self.member else None
-            self._open_module(self.doc.path, location)
+            self._open_module(self.doc.path, location, fallback_row=self.members.currentRow())
 
     def _start_background_index(self):
         self.index_cancelled.set()
@@ -1546,6 +1546,22 @@ class MainWindow(QMainWindow):
         self.editor.setTextCursor(cursor)
         self.editor.setFocus()
 
+    def _select_member_occurrence(self, preferred_name, occurrence, fallback_row=None):
+        visible = self._visible()
+        preferred = callable_name_from_label(preferred_name)
+        matches = [
+            index for index, member in enumerate(visible)
+            if callable_name_from_label(member.label) == preferred
+        ]
+        row = matches[occurrence] if 0 <= occurrence < len(matches) else fallback_row
+        if row is None or not (0 <= row < len(visible)):
+            return False
+        with QSignalBlocker(self.members):
+            self.members.setCurrentRow(row)
+        self.member = visible[row]
+        self._load_member(self.member)
+        return True
+
     def _apply_structural_edit(self, edit, description, fallback_row=None, occurrence=0):
         if not self.doc:
             return
@@ -1566,15 +1582,7 @@ class MainWindow(QMainWindow):
             self.index_cache.invalidate(path)
             self._open_module(path, (edit.scope, edit.category, edit.preferred_name), fallback_row=fallback_row)
             if edit.preferred_name and occurrence:
-                preferred = callable_name_from_label(edit.preferred_name)
-                matches = [
-                    index for index, member in enumerate(self._visible())
-                    if callable_name_from_label(member.label) == preferred
-                ]
-                if occurrence < len(matches):
-                    target_row = matches[occurrence]
-                    self.members.setCurrentRow(target_row)
-                    self._member(target_row)
+                self._select_member_occurrence(edit.preferred_name, occurrence, fallback_row)
             self.statusBar().showMessage(description, 5000)
             if description == "Duplicated Member" and self.member:
                 self._select_member_identifier()

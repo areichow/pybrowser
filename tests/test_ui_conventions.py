@@ -157,3 +157,10 @@ def test_workspace_destroy_callback_does_not_capture_deleted_window_wrapper():
     assert "window.destroyed.connect(self._window_destroyed)" in source
     assert "lambda: self._remove(window)" not in source
     assert "QCoreApplication.closingDown()" in source
+
+
+def test_file_watcher_reload_preserves_duplicate_row_fallback():
+    source = Path("pybrowser/main_window.py").read_text()
+    method = source[source.index("    def _file_changed"):source.index("    def _start_background_index", source.index("    def _file_changed"))]
+    assert "fallback_row=self.members.currentRow()" in method
+    assert "def _select_member_occurrence" in source

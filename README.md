@@ -370,3 +370,8 @@ Document loading now derives decoded text, scopes, and file signature from one s
 #### Revision 12.11 duplicate selection and Qt teardown safety
 
 Duplicate Member now resolves the requested callable occurrence after reload and explicitly opens that row before selecting its identifier. Workspace window destruction no longer captures a deleted Python wrapper, and Window-menu rebuild callbacks disconnect when their owning window is destroyed. Qt object validity guards prevent late shutdown signals from touching deleted QMenu objects.
+
+
+#### Revision 12.12 watcher-stable duplicate occurrence selection
+
+Duplicate Member selection is now applied through one signal-blocked occurrence-selection helper that updates the list row, Member model, projection, and editor together. QFileSystemWatcher reloads preserve the current Member row as a fallback, so an ambiguous duplicate label cannot reset the Browser to the first occurrence after the write completes.
