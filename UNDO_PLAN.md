@@ -199,3 +199,8 @@ Completed legacy SQLite migrations, restart-aware snapshot requirements, missing
 ### Revision 12.7 final authority and maintenance hardening
 
 SQLite is authoritative during reconciliation, stale JSON mirrors are repaired, core commit completion is isolated from fallible housekeeping, reparse failures preserve committed editor state, and retention enforces configured limits without deleting active undo/redo candidates.
+
+
+### Revision 12.8 structural and concurrency completion
+
+Completed structural command regression repair, duplicate-selection safety, schema 4 recovery timestamps, portable manifest reconstruction, SQLite-first metadata transitions, claimed undo/redo transitions, and crash-aware pruning. Development validation now includes Ruff F821 undefined-name checking.

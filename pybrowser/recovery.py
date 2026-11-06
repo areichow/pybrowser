@@ -20,7 +20,7 @@ except ImportError:
     QStandardPaths = None
 
 FORMAT_VERSION = 3
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 class RecoverySchemaError(RuntimeError):
     pass
@@ -35,6 +35,9 @@ class TransactionStatus(StrEnum):
     ABORTED = "aborted"
     REVIEWED = "reviewed"
     FAILED = "failed"
+    UNDOING = "undoing"
+    REDOING = "redoing"
+    PRUNING = "pruning"
 
 class OperationKind(StrEnum):
     SAVE_MEMBER = "save_member"
@@ -82,6 +85,7 @@ class TransactionManifest(TypedDict, total=False):
     redone_at: str
     recovered_at: str
     reviewed_at: str
+    superseded_at: str
     error: str
     post_commit_error: str
     post_commit_error_at: str
@@ -236,6 +240,8 @@ class RecoveryJournal:
                         self._migrate_1_to_2(db)
                     elif version == 2:
                         self._migrate_2_to_3(db)
+                    elif version == 3:
+                        self._migrate_3_to_4(db)
                     version += 1
                     db.execute(f"PRAGMA user_version = {version}")
             self._create_indexes(db)
@@ -251,6 +257,7 @@ class RecoveryJournal:
                 world_root TEXT NOT NULL, writer TEXT,
                 location_before_json TEXT, location_after_json TEXT,
                 committed_at TEXT, undone_at TEXT, redone_at TEXT,
+                recovered_at TEXT, reviewed_at TEXT, superseded_at TEXT,
                 error TEXT, post_commit_error TEXT, post_commit_error_at TEXT,
                 damaged INTEGER NOT NULL DEFAULT 0,
                 transaction_directory TEXT NOT NULL
@@ -295,6 +302,13 @@ class RecoveryJournal:
         if "post_commit_error_at" not in columns: db.execute("ALTER TABLE transactions ADD COLUMN post_commit_error_at TEXT")
 
     @staticmethod
+    def _migrate_3_to_4(db):
+        columns = {row[1] for row in db.execute("PRAGMA table_info(transactions)")}
+        for name in ("recovered_at", "reviewed_at", "superseded_at"):
+            if name not in columns:
+                db.execute(f"ALTER TABLE transactions ADD COLUMN {name} TEXT")
+
+    @staticmethod
     def _manifest_json(value):
         return json.dumps(value, sort_keys=True) if value is not None else None
 
@@ -307,9 +321,9 @@ class RecoveryJournal:
                     id, timestamp_utc, operation, description, status, pinned,
                     committed_to_disk, world_root, writer,
                     location_before_json, location_after_json, committed_at,
-                    undone_at, redone_at, error, post_commit_error,
-                    post_commit_error_at, damaged, transaction_directory
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    undone_at, redone_at, recovered_at, reviewed_at, superseded_at,
+                    error, post_commit_error, post_commit_error_at, damaged, transaction_directory
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     timestamp_utc=excluded.timestamp_utc,
                     operation=excluded.operation,
@@ -324,6 +338,9 @@ class RecoveryJournal:
                     committed_at=excluded.committed_at,
                     undone_at=excluded.undone_at,
                     redone_at=excluded.redone_at,
+                    recovered_at=excluded.recovered_at,
+                    reviewed_at=excluded.reviewed_at,
+                    superseded_at=excluded.superseded_at,
                     error=excluded.error,
                     post_commit_error=excluded.post_commit_error,
                     post_commit_error_at=excluded.post_commit_error_at,
@@ -338,7 +355,8 @@ class RecoveryJournal:
                 self._manifest_json(manifest.get("location_before")),
                 self._manifest_json(manifest.get("location_after")),
                 manifest.get("committed_at"), manifest.get("undone_at"),
-                manifest.get("redone_at"), manifest.get("error"),
+                manifest.get("redone_at"), manifest.get("recovered_at"),
+                manifest.get("reviewed_at"), manifest.get("superseded_at"), manifest.get("error"),
                 manifest.get("post_commit_error"), manifest.get("post_commit_error_at"),
                 int(bool(manifest.get("damaged", False))), str(directory),
             ))
@@ -380,12 +398,17 @@ class RecoveryJournal:
             "location_before": parse_json(row["location_before_json"]),
             "location_after": parse_json(row["location_after_json"]),
             "committed_at": row["committed_at"], "undone_at": row["undone_at"],
-            "redone_at": row["redone_at"], "error": row["error"],
-            "post_commit_error": row["post_commit_error"],
+            "redone_at": row["redone_at"], "recovered_at": row["recovered_at"],
+            "reviewed_at": row["reviewed_at"], "superseded_at": row["superseded_at"],
+            "error": row["error"], "post_commit_error": row["post_commit_error"],
             "post_commit_error_at": row["post_commit_error_at"],
-            "damaged": bool(row["damaged"]), "files": [
-                {**dict(item), "path": item["absolute_path"]} for item in files
-            ],
+            "damaged": bool(row["damaged"]), "files": [{
+                "path": item["absolute_path"], "relative_path": item["relative_path"],
+                "encoding": item["encoding"], "newline": item["newline"], "mode": item["mode"],
+                "before_exists": bool(item["before_exists"]), "after_exists": bool(item["after_exists"]),
+                "before_sha256": item["before_sha256"], "after_sha256": item["after_sha256"],
+                "before_snapshot": item["before_snapshot"], "after_snapshot": item["after_snapshot"],
+            } for item in files],
         }
 
     def _snapshot_damage(self, directory, manifest):
@@ -532,13 +555,14 @@ class RecoveryJournal:
             callback()
 
     def set_pinned(self, transaction: RecoveryTransaction, pinned: bool):
-        manifest = dict(transaction.manifest)
-        manifest["pinned"] = bool(pinned)
+        manifest = dict(transaction.manifest); manifest["pinned"] = bool(pinned)
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            cursor = db.execute("UPDATE transactions SET pinned = ? WHERE id = ?", (int(bool(pinned)), transaction.transaction_id))
+            if cursor.rowcount != 1:
+                raise RecoveryConflictError("The transaction no longer exists.", transaction)
         _json_write(transaction.directory / "manifest.json", manifest)
-        self._upsert_manifest(transaction.directory, manifest)
-        callback = getattr(self, "on_change", None)
-        if callback:
-            callback()
+        self.emit_change()
 
     def snapshot_path(self, transaction: RecoveryTransaction, side: str, file_index=0):
         key = "before_snapshot" if side == "before" else "after_snapshot"
@@ -585,38 +609,30 @@ class RecoveryJournal:
             return self._transaction_from_row(db, row)
 
     def set_status(self, transaction, status, expected_statuses=None, **extra):
-        status = str(status)
-        manifest = dict(transaction.manifest)
+        status = str(status); manifest = dict(transaction.manifest)
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             current = db.execute("SELECT status FROM transactions WHERE id = ?", (transaction.transaction_id,)).fetchone()
-            if current is None:
-                raise RecoveryConflictError("The transaction no longer exists.", transaction)
+            if current is None: raise RecoveryConflictError("The transaction no longer exists.", transaction)
             if expected_statuses and current[0] not in set(expected_statuses):
                 raise RecoveryConflictError(f"Transaction state changed from {transaction.status} to {current[0]}.", transaction)
             manifest["status"] = status; manifest.update(extra)
-            _json_write(transaction.directory / "manifest.json", manifest)
             self._upsert_manifest(transaction.directory, manifest, db)
-        callback = getattr(self, "on_change", None)
-        if callback: callback()
+        _json_write(transaction.directory / "manifest.json", manifest)
+        self.emit_change()
         return RecoveryTransaction(transaction.directory, manifest)
 
     def supersede_redo_branch(self, excluding=None):
-        now = datetime.now(timezone.utc).isoformat()
-        changed = []
+        now = datetime.now(timezone.utc).isoformat(); changed = []
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             rows = db.execute("SELECT id, transaction_directory FROM transactions WHERE status = ? AND id != ?", (TransactionStatus.UNDONE.value, excluding or "")).fetchall()
             for row in rows:
-                db.execute("UPDATE transactions SET status = ? WHERE id = ? AND status = ?", (TransactionStatus.SUPERSEDED.value, row["id"], TransactionStatus.UNDONE.value))
-                if db.total_changes:
-                    changed.append((row["id"], Path(row["transaction_directory"])))
+                cursor = db.execute("UPDATE transactions SET status = ?, superseded_at = ? WHERE id = ? AND status = ?", (TransactionStatus.SUPERSEDED.value, now, row["id"], TransactionStatus.UNDONE.value))
+                if cursor.rowcount == 1: changed.append((row["id"], Path(row["transaction_directory"])))
         for transaction_id, directory in changed:
             tx = self.get(transaction_id)
-            if tx:
-                manifest = dict(tx.manifest); manifest["status"] = TransactionStatus.SUPERSEDED.value; manifest["superseded_at"] = now
-                _json_write(directory / "manifest.json", manifest)
-                self._upsert_manifest(directory, manifest)
+            if tx: _json_write(directory / "manifest.json", tx.manifest)
 
     def mark_post_commit_error(self, transaction, message):
         return self.set_status(transaction, transaction.status, post_commit_error=message, post_commit_error_at=datetime.now(timezone.utc).isoformat())
@@ -645,36 +661,47 @@ class RecoveryJournal:
         if transaction.status not in expected_statuses:
             raise RecoveryConflictError(f"Transaction {transaction.transaction_id} is {transaction.status}, so it cannot be {direction}ne.", transaction)
         if transaction.damaged: raise RecoveryConflictError("The transaction is damaged and cannot be applied automatically.", transaction)
+        original_status = transaction.status
+        claim_status = TransactionStatus.UNDOING.value if direction == "undo" else TransactionStatus.REDOING.value
+        claimed = self.set_status(transaction, claim_status, expected_statuses=expected_statuses)
         source_side = "before" if direction == "undo" else "after"
         hash_key = "after_sha256" if direction == "undo" else "before_sha256"
         exists_key = "after_exists" if direction == "undo" else "before_exists"
-        conflicts = []
-        for index, (path, state) in enumerate(self.inspect_state(transaction)):
-            item = transaction.manifest["files"][index]
-            exists = item.get(exists_key, not (direction == "redo" and transaction.manifest.get("operation") == OperationKind.CREATE_PACKAGE_INIT.value))
-            expected = item.get(hash_key) if exists else None
-            current = sha256_bytes(path.read_bytes()) if path.exists() else None
-            if current != expected: conflicts.append((path, state))
-        if conflicts: raise RecoveryConflictError(f"Cannot {direction} because {len(conflicts)} affected file(s) no longer match the expected hash.", transaction, conflicts)
         backups=[]; changed=[]
         try:
-            for index, item in enumerate(transaction.manifest.get("files", [])):
+            conflicts=[]
+            for index, (path, state) in enumerate(self.inspect_state(claimed)):
+                item=claimed.manifest["files"][index]
+                exists=item.get(exists_key, not (direction == "redo" and claimed.operation == OperationKind.CREATE_PACKAGE_INIT.value))
+                expected=item.get(hash_key) if exists else None
+                current=sha256_bytes(path.read_bytes()) if path.exists() else None
+                if current != expected: conflicts.append((path,state))
+            if conflicts:
+                raise RecoveryConflictError(f"Cannot {direction} because {len(conflicts)} affected file(s) no longer match the expected hash.", claimed, conflicts)
+            for index,item in enumerate(claimed.files):
                 path=_transaction_path(item); existed=path.exists(); data=path.read_bytes() if existed else b""
-                backups.append((path, existed, data, stat.S_IMODE(path.stat().st_mode) if existed else None))
-                target_exists=item.get("before_exists", transaction.manifest.get("operation") != OperationKind.CREATE_PACKAGE_INIT.value) if direction == "undo" else item.get("after_exists", True)
-                if target_exists: _write_snapshot_to_disk(path, self.snapshot_path(transaction, source_side, index).read_bytes(), item.get("mode"))
+                backups.append((path,existed,data,stat.S_IMODE(path.stat().st_mode) if existed else None))
+                target_exists=item.get("before_exists", claimed.operation != OperationKind.CREATE_PACKAGE_INIT.value) if direction == "undo" else item.get("after_exists",True)
+                if target_exists: _write_snapshot_to_disk(path,self.snapshot_path(claimed,source_side,index).read_bytes(),item.get("mode"))
                 elif path.exists(): path.unlink(); _fsync_directory(path.parent)
                 changed.append(path)
         except Exception:
-            for path, existed, data, mode in reversed(backups):
+            for path,existed,data,mode in reversed(backups):
                 try:
-                    if existed: _write_snapshot_to_disk(path, data, mode)
+                    if existed: _write_snapshot_to_disk(path,data,mode)
                     elif path.exists(): path.unlink()
                 except OSError: pass
+            current=self.get(claimed.transaction_id)
+            if current and current.status == claim_status:
+                self.set_status(current, original_status, expected_statuses={claim_status})
             raise
         now=datetime.now(timezone.utc).isoformat()
-        result=self.set_status(transaction, TransactionStatus.UNDONE.value, expected_statuses=expected_statuses, undone_at=now) if direction == "undo" else self.set_status(transaction, TransactionStatus.REDONE.value, expected_statuses=expected_statuses, redone_at=now)
-        return result, tuple(changed)
+        current=self.get(claimed.transaction_id)
+        if direction == "undo":
+            result=self.set_status(current,TransactionStatus.UNDONE.value,expected_statuses={claim_status},undone_at=now)
+        else:
+            result=self.set_status(current,TransactionStatus.REDONE.value,expected_statuses={claim_status},redone_at=now)
+        return result,tuple(changed)
 
     def database_settings(self):
         with self._connect() as db:
@@ -686,31 +713,38 @@ class RecoveryJournal:
             }
 
     def prune(self):
-        all_transactions = self.transactions()
-        latest_undo = self.latest_undo()
-        latest_redo = self.latest_redo()
-        protected_ids = {item.transaction_id for item in all_transactions if item.pinned or item.status in INCOMPLETE_STATES or item.status == TransactionStatus.UNDONE.value}
-        if latest_undo: protected_ids.add(latest_undo.transaction_id)
-        if latest_redo: protected_ids.add(latest_redo.transaction_id)
-        active = [item for item in all_transactions if item.status in {TransactionStatus.COMMITTED.value, TransactionStatus.REDONE.value}]
-        protected_ids.update(item.transaction_id for item in active[:self.max_transactions])
-        completed = [item for item in all_transactions if item.status in TERMINAL_STATES and item.transaction_id not in protected_ids]
-        cutoff = datetime.now(timezone.utc) - timedelta(days=self.min_days)
-        total = sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file())
-        removed = []
+        all_transactions=self.transactions(); latest_undo=self.latest_undo(); latest_redo=self.latest_redo()
+        protected={item.transaction_id for item in all_transactions if item.pinned or item.status in INCOMPLETE_STATES or item.status == TransactionStatus.UNDONE.value}
+        if latest_undo: protected.add(latest_undo.transaction_id)
+        if latest_redo: protected.add(latest_redo.transaction_id)
+        active=[item for item in all_transactions if item.status in {TransactionStatus.COMMITTED.value,TransactionStatus.REDONE.value}]
+        protected.update(item.transaction_id for item in active[:self.max_transactions])
+        completed=[item for item in all_transactions if item.status in TERMINAL_STATES and item.transaction_id not in protected]
+        cutoff=datetime.now(timezone.utc)-timedelta(days=self.min_days)
+        total=sum(path.stat().st_size for path in self.root.rglob("*") if path.is_file())
+        candidates=[]
         for item in reversed(completed):
-            try: timestamp = datetime.fromisoformat(item.timestamp)
-            except ValueError: timestamp = datetime.min.replace(tzinfo=timezone.utc)
-            over_count = len(all_transactions) - len(removed) > self.max_transactions
-            over_size = total > self.max_bytes
-            if not (over_count or over_size) or timestamp > cutoff: continue
-            size = sum(p.stat().st_size for p in item.directory.rglob("*") if p.is_file())
-            removed.append(item.transaction_id)
-            shutil.rmtree(item.directory, ignore_errors=True)
-            total -= size
-        if removed:
+            try: timestamp=datetime.fromisoformat(item.timestamp)
+            except ValueError: timestamp=datetime.min.replace(tzinfo=timezone.utc)
+            if not (len(all_transactions)-len(candidates)>self.max_transactions or total>self.max_bytes) or timestamp>cutoff: continue
+            size=sum(path.stat().st_size for path in item.directory.rglob("*") if path.is_file())
+            candidates.append((item,size)); total-=size
+        if not candidates: return
+        claimed=[]
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for item,size in candidates:
+                cursor=db.execute("UPDATE transactions SET status = ? WHERE id = ? AND status = ?",(TransactionStatus.PRUNING.value,item.transaction_id,item.status))
+                if cursor.rowcount==1: claimed.append((item,size))
+        for item,_size in claimed:
+            try:
+                shutil.rmtree(item.directory)
+            except OSError:
+                with self._connect() as db:
+                    db.execute("UPDATE transactions SET status = ? WHERE id = ? AND status = ?",(item.status,item.transaction_id,TransactionStatus.PRUNING.value))
+                continue
             with self._connect() as db:
-                db.executemany("DELETE FROM transactions WHERE id = ?", ((item,) for item in removed))
+                db.execute("DELETE FROM transactions WHERE id = ? AND status = ?",(item.transaction_id,TransactionStatus.PRUNING.value))
 
 
 class RecoveryConflictError(RuntimeError):

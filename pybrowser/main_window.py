@@ -25,7 +25,6 @@ from .structural import (
     delete_member, duplicate_member, move_member, rename_category,
 )
 from threading import Event
-from .saving import changed
 from .search import SearchMatch, find_all
 from .widgets.editor import Editor
 from .widgets.preferences_dialog import PreferencesDialog
@@ -1533,19 +1532,30 @@ class MainWindow(QMainWindow):
         self._select_module_path(result.module, (result.scope, result.category, result.label))
         self._select_line_result(result.line)
 
+    def _select_member_identifier(self):
+        if not self.member:
+            return
+        text = self.editor.toPlainText()
+        import re
+        match = re.search(r"(?m)^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)", text)
+        if not match:
+            return
+        cursor = self.editor.textCursor()
+        cursor.setPosition(match.start(1))
+        cursor.setPosition(match.end(1), QTextCursor.MoveMode.KeepAnchor)
+        self.editor.setTextCursor(cursor)
+        self.editor.setFocus()
+
     def _apply_structural_edit(self, edit, description, fallback_row=None, occurrence=0):
         if not self.doc:
             return
         if self.editor.document().isModified() and not self._confirm_discard():
             return
         try:
-            validate(edit.text, str(self.doc.path))
-            if changed(self.doc):
-                raise StructuralEditError("The module changed on disk; reload it before structural editing")
             path = self.doc.path
             operation = self._structural_operation(description)
             location = self._journal_location()
-            self.workspace.write_service.save_document(SaveRequest(
+            result = self.workspace.write_service.save_document(SaveRequest(
                 self.doc, edit.text, operation, description,
                 location_before=location,
                 location_after={"module": str(self.doc.path), "scope": edit.scope, "category": edit.category, "member": edit.preferred_name},
@@ -1560,6 +1570,16 @@ class MainWindow(QMainWindow):
                 if occurrence < len(matches):
                     self.members.setCurrentRow(matches[occurrence])
             self.statusBar().showMessage(description, 5000)
+            if description == "Duplicated Member" and self.member:
+                self._select_member_identifier()
+                self.statusBar().showMessage(
+                    f"Duplicated {callable_name_from_label(self.member.label)}. Rename the selected copy and press Ctrl+S.", 8000)
+            if result.warnings:
+                QMessageBox.warning(self, "Committed with warning", "\n".join(result.warnings))
+        except SourceConflictError as exc:
+            QMessageBox.warning(self, "File changed", str(exc))
+        except SourcePostCommitError as exc:
+            QMessageBox.warning(self, "Committed with warning", str(exc))
         except (OSError, ParseError, StructuralEditError) as exc:
             QMessageBox.critical(self, "Structural edit failed", str(exc))
 
@@ -1701,9 +1721,6 @@ class MainWindow(QMainWindow):
 
     def save(self):
         if not self.doc or not self.member:
-            return
-        if changed(self.doc):
-            QMessageBox.warning(self, "File changed", "The file changed outside PyBrowser. Reload it before saving; PyBrowser will not overwrite a stale Document.")
             return
         bookmark = self._capture_browser_selection()
         path = self.doc.path

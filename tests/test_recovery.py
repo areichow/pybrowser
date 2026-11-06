@@ -228,7 +228,7 @@ def test_schema_user_version_is_current(tmp_path):
     world=tmp_path/'world'; world.mkdir(); journal=RecoveryJournal(world,tmp_path/'history')
     import sqlite3
     with sqlite3.connect(journal.database_path) as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 3
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 4
 
 def _create_legacy_database(path, version):
     import sqlite3
@@ -268,7 +268,7 @@ def test_real_schema_1_and_2_databases_migrate(tmp_path):
         _create_legacy_database(root / 'journal.sqlite3', version)
         journal = RecoveryJournal(world, history)
         with sqlite3.connect(journal.database_path) as db:
-            assert db.execute('PRAGMA user_version').fetchone()[0] == 3
+            assert db.execute('PRAGMA user_version').fetchone()[0] == 4
             columns = {row[1] for row in db.execute('PRAGMA table_info(transactions)')}
             assert {'undone_at', 'redone_at', 'post_commit_error', 'post_commit_error_at'} <= columns
             indexes = {row[1] for row in db.execute('PRAGMA index_list(transactions)')}
@@ -349,3 +349,42 @@ def test_retention_prunes_old_committed_history_but_keeps_latest(tmp_path):
     remaining={tx.transaction_id for tx in journal.transactions()}
     assert ids[-1] in remaining
     assert len(remaining) <= 2
+
+def test_schema_4_preserves_recovery_review_and_supersede_timestamps(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    history=tmp_path/'history'; journal=RecoveryJournal(world,history)
+    directory,manifest,_=journal.record_write(path,path.read_bytes(),b'A = 2\n')
+    aborted=journal.resolve_incomplete(journal.incomplete()[0],'abort')
+    reopened=RecoveryJournal(world,history)
+    assert reopened.get(aborted.transaction_id).recovered_at
+    directory,manifest,_=reopened.record_write(path,path.read_bytes(),b'A = 3\n')
+    reviewed=reopened.resolve_incomplete(reopened.incomplete()[0],'review')
+    again=RecoveryJournal(world,history)
+    assert again.get(reviewed.transaction_id).manifest['reviewed_at']
+    tx=SourceWriteService(again).save_document(SaveRequest(read_document(path),'A = 4\n','save_file','one')).transaction
+    undone,_=again.apply_transaction(tx,'undo')
+    SourceWriteService(again).save_document(SaveRequest(read_document(path),'A = 5\n','save_file','branch'))
+    final=RecoveryJournal(world,history).get(tx.transaction_id)
+    assert final.status == 'superseded' and final.manifest['superseded_at']
+
+
+def test_rebuilt_manifest_uses_portable_file_shape(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    history=tmp_path/'history'; journal=RecoveryJournal(world,history)
+    tx=SourceWriteService(journal).save_document(SaveRequest(read_document(path),'A = 2\n','save_file','save')).transaction
+    (tx.directory/'manifest.json').unlink(); RecoveryJournal(world,history)
+    item=json.loads((tx.directory/'manifest.json').read_text())['files'][0]
+    assert set(item) == {'path','relative_path','encoding','newline','mode','before_exists','after_exists','before_sha256','after_sha256','before_snapshot','after_snapshot'}
+    assert 'transaction_id' not in item and 'file_index' not in item and 'absolute_path' not in item
+
+
+def test_undo_claim_blocks_second_journal_before_source_write(tmp_path, monkeypatch):
+    from pybrowser.recovery import RecoveryConflictError, TransactionStatus
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    history=tmp_path/'history'; first=RecoveryJournal(world,history)
+    tx=SourceWriteService(first).save_document(SaveRequest(read_document(path),'A = 2\n','save_file','save')).transaction
+    claimed=first.set_status(tx,TransactionStatus.UNDOING.value,expected_statuses={'committed'})
+    second=RecoveryJournal(world,history)
+    with __import__('pytest').raises(RecoveryConflictError): second.apply_transaction(tx,'undo')
+    first.set_status(claimed,'committed',expected_statuses={'undoing'})
+    assert path.read_text() == 'A = 2\n'

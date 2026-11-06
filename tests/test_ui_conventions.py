@@ -126,3 +126,20 @@ def test_incomplete_recovery_actions_are_exposed_in_history():
     assert 'QPushButton("Finalize Transaction")' in history
     assert 'QPushButton("Mark Reviewed")' in history
     assert 'resolve_incomplete(tx, action)' in history
+
+def test_structural_edits_delegate_validation_and_conflicts_to_write_service():
+    source = Path('pybrowser/main_window.py').read_text()
+    method = source[source.index('    def _apply_structural_edit'):source.index('    def _select_location', source.index('    def _apply_structural_edit'))]
+    assert '\n            validate(' not in method
+    assert '\n            if changed(' not in method
+    assert 'result = self.workspace.write_service.save_document' in method
+    assert 'except SourceConflictError' in method
+    assert 'except SourcePostCommitError' in method
+    assert 'result.warnings' in method
+
+
+def test_duplicate_success_selects_identifier_for_rename():
+    source = Path('pybrowser/main_window.py').read_text()
+    assert 'def _select_member_identifier' in source
+    assert 'self._select_member_identifier()' in source
+    assert 'Rename the selected copy and press Ctrl+S.' in source
