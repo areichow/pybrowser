@@ -348,6 +348,11 @@ class RecoveryJournal:
         self._upsert_manifest(directory, manifest)
         return directory, manifest, after_path
 
+    def update_prepared(self, directory: Path, manifest: dict):
+        """Persist metadata changes made after preparation but before disk commit."""
+        _json_write(directory / "manifest.json", manifest)
+        self._upsert_manifest(directory, manifest)
+
     def finalize(self, directory: Path, manifest: dict, after_path: Path, after: bytes):
         after_path.write_bytes(after)
         manifest["status"] = "committed"
@@ -431,57 +436,6 @@ class RecoveryJournal:
         if removed:
             with self._connect() as db:
                 db.executemany("DELETE FROM transactions WHERE id = ?", ((item,) for item in removed))
-
-
-def journaled_atomic_write(document, text: str, journal: RecoveryJournal, *, operation="save_file",
-                             description="Save file", location_before=None, location_after=None):
-    path = document.path.resolve()
-    before = path.read_bytes()
-    after = text.encode(document.encoding)
-    mode = stat.S_IMODE(path.stat().st_mode)
-    directory, manifest, after_snapshot = journal.record_write(
-        path, before, after, operation=operation, description=description,
-        encoding=document.encoding, newline=document.newline, mode=mode,
-        location_before=location_before, location_after=location_after,
-    )
-    from .saving import atomic_write
-    try:
-        atomic_write(document, text)
-        return journal.finalize(directory, manifest, after_snapshot, after)
-    except BaseException as exc:
-        journal.mark_failed(directory, manifest, str(exc))
-        raise
-
-
-def journaled_create_file(path: Path, data: bytes, journal: RecoveryJournal, *, operation="create_file",
-                           description="Create file", encoding="utf-8", newline="\n"):
-    path = Path(path).resolve()
-    if path.exists():
-        raise FileExistsError(path)
-    directory, manifest, after_snapshot = journal.record_write(
-        path, b"", data, operation=operation, description=description,
-        encoding=encoding, newline=newline, mode=0o644,
-    )
-    manifest["files"][0]["before_exists"] = False
-    _json_write(directory / "manifest.json", manifest)
-    journal._upsert_manifest(directory, manifest)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, name = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
-        temp = Path(name)
-        try:
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temp, path)
-        finally:
-            if temp.exists():
-                temp.unlink()
-        return journal.finalize(directory, manifest, after_snapshot, data)
-    except BaseException as exc:
-        journal.mark_failed(directory, manifest, str(exc))
-        raise
 
 
 class RecoveryConflictError(RuntimeError):

@@ -212,9 +212,3 @@ def convert_method_kind(document: Document, member: Member, method_kind: str) ->
     return StructuralEdit(text, member.scope, member.category, member.label.split("(", 1)[0].strip())
 
 
-def create_package_init(directory: Path) -> Path:
-    path = directory / "__init__.py"
-    if path.exists():
-        raise StructuralEditError(f"{path} already exists")
-    path.write_text('"""Package initialization."""\n', encoding="utf-8", newline="")
-    return path

@@ -100,9 +100,7 @@ class SourceWriteService:
             location_before=location_before, location_after=location_after,
         )
         manifest["files"][0]["before_exists"] = False
-        from .recovery import _json_write
-        _json_write(directory / "manifest.json", manifest)
-        self.journal._upsert_manifest(directory, manifest)
+        self.journal.update_prepared(directory, manifest)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             self._replace_bytes(path, data, 0o644)

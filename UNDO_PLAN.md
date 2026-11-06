@@ -188,3 +188,8 @@ A future phase will add a preference choosing between **Write through immediatel
 #### Revision 12.3 shared write service
 
 All active source mutation paths now use `SourceWriteService`. The service owns complete-module validation, external signature conflict detection, recovery-journal preparation and finalization, atomic replacement, reparsing, and Workspace notification. Browser Member saves, File View saves, editable query saves, structural operations, and package file creation no longer call journal or atomic-write helpers directly. This boundary is the required insertion point for the future staged World overlay and selective commit modes.
+
+
+##### Revision 12.4 Revision 12C completion
+
+Removed the remaining parallel write APIs and converted recovery/I/O tests to `SourceWriteService`. The Recovery Journal now exposes `update_prepared()` for the file-existence metadata adjustment required by new-file transactions. There is one supported source mutation path, including application code and tests.

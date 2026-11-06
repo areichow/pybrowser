@@ -22,7 +22,7 @@ from .widgets.busy_indicator import BusyIndicator
 from .code_queries import callable_name_from_label, implementers, senders
 from .structural import (
     StructuralEditError, add_class, add_function, add_method, convert_method_kind,
-    create_package_init, delete_member, duplicate_member, move_member, rename_category,
+    delete_member, duplicate_member, move_member, rename_category,
 )
 from threading import Event
 from .saving import changed

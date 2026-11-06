@@ -324,3 +324,8 @@ Transactions progress from `committed` or `redone` to `undone`, and from `undone
 `SourceWriteService` is now the single source-write authority. Browser Member saves, structural commands, File View, editable Implementers/Senders/reference windows, and package `__init__.py` creation submit `SaveRequest` objects through the Workspace service. The service validates the full module, checks the loaded document signature, prepares and finalizes the recovery transaction, performs an `fsync()` plus `os.replace()` atomic write, reparses the stored module, returns a `SaveResult`, and broadcasts the changed path exactly once.
 
 UI windows retain presentation responsibilities such as projection reconstruction, selection restoration, cursor restoration, and error dialogs. They no longer directly coordinate journaling and disk replacement. This creates the stable boundary needed by the future journal-only staging overlay and **Commit Changes...** workflow.
+
+
+### Revision 12.4 shared write service completion
+
+Revision 12C is now complete. Legacy `journaled_atomic_write`, `journaled_create_file`, and direct `atomic_write` application paths were removed, along with the obsolete disk-writing `structural.create_package_init()` helper. Recovery and I/O tests now exercise the same `SourceWriteService` used by the GUI. `RecoveryJournal.update_prepared()` provides a public journal boundary for file-creation metadata, so the write service no longer imports private recovery functions or calls private SQLite upsert methods.

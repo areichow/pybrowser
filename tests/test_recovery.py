@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 
 from pybrowser.parser import read_document
-from pybrowser.recovery import RecoveryJournal, journaled_atomic_write, journaled_create_file, sha256_bytes
+from pybrowser.recovery import RecoveryJournal, sha256_bytes
+from pybrowser.source_write_service import SaveRequest, SourceWriteService
 
 
 def test_journaled_write_records_snapshots_and_manifest(tmp_path):
@@ -10,7 +11,7 @@ def test_journaled_write_records_snapshots_and_manifest(tmp_path):
     path = world / "app.py"; path.write_text("VALUE = 1\n")
     doc = read_document(path)
     journal = RecoveryJournal(world, tmp_path / "history")
-    tx = journaled_atomic_write(doc, "VALUE = 2\n", journal, operation="save_member", description="Save Member VALUE")
+    tx = SourceWriteService(journal).save_document(SaveRequest(doc, "VALUE = 2\n", "save_member", "Save Member VALUE")).transaction
     assert path.read_text() == "VALUE = 2\n"
     manifest = json.loads((tx.directory / "manifest.json").read_text())
     assert manifest["status"] == "committed"
@@ -35,7 +36,7 @@ def test_restore_as_and_pinning(tmp_path):
     world = tmp_path / "world"; world.mkdir()
     path = world / "app.py"; path.write_text("A = 1\n")
     journal = RecoveryJournal(world, tmp_path / "history")
-    tx = journaled_atomic_write(read_document(path), "A = 2\n", journal)
+    tx = SourceWriteService(journal).save_document(SaveRequest(read_document(path), "A = 2\n", "save_file", "Save File")).transaction
     restored = tmp_path / "restored.py"
     journal.restore_as(tx, "before", restored)
     assert restored.read_text() == "A = 1\n"
@@ -47,7 +48,7 @@ def test_journaled_new_file_has_empty_before_snapshot(tmp_path):
     world = tmp_path / "world"; world.mkdir()
     journal = RecoveryJournal(world, tmp_path / "history")
     path = world / "pkg" / "__init__.py"
-    tx = journaled_create_file(path, b'"""Package."""\n', journal, operation="create_package_init")
+    tx = SourceWriteService(journal).create_file(path, b'"""Package."""\n', operation="create_package_init").transaction
     assert path.exists()
     assert journal.snapshot_path(tx, "before").read_bytes() == b""
     assert journal.snapshot_path(tx, "after").read_bytes() == b'"""Package."""\n'
@@ -58,7 +59,7 @@ def test_sqlite_is_authoritative_index_with_durable_pragmas(tmp_path):
     world = tmp_path / "world"; world.mkdir()
     path = world / "app.py"; path.write_text("A = 1\n")
     journal = RecoveryJournal(world, tmp_path / "history")
-    tx = journaled_atomic_write(read_document(path), "A = 2\n", journal, operation="save_member")
+    tx = SourceWriteService(journal).save_document(SaveRequest(read_document(path), "A = 2\n", "save_member", "Save Member")).transaction
     assert journal.database_path.exists()
     settings = journal.database_settings()
     assert settings["journal_mode"].casefold() == "wal"
@@ -136,7 +137,7 @@ def test_safe_undo_and_redo_round_trip(tmp_path):
     world = tmp_path / "world"; world.mkdir()
     path = world / "app.py"; path.write_text("A = 1\n")
     journal = RecoveryJournal(world, tmp_path / "history")
-    tx = journaled_atomic_write(read_document(path), "A = 2\n", journal, operation="save_member")
+    tx = SourceWriteService(journal).save_document(SaveRequest(read_document(path), "A = 2\n", "save_member", "Save Member")).transaction
     undone, paths = journal.apply_transaction(tx, "undo")
     assert path.read_text() == "A = 1\n"
     assert undone.status == "undone"
@@ -152,7 +153,7 @@ def test_undo_refuses_hash_mismatch_without_writing(tmp_path):
     world = tmp_path / "world"; world.mkdir()
     path = world / "app.py"; path.write_text("A = 1\n")
     journal = RecoveryJournal(world, tmp_path / "history")
-    tx = journaled_atomic_write(read_document(path), "A = 2\n", journal)
+    tx = SourceWriteService(journal).save_document(SaveRequest(read_document(path), "A = 2\n", "save_file", "Save File")).transaction
     path.write_text("EXTERNAL = 3\n")
     try:
         journal.apply_transaction(tx, "undo")
@@ -168,7 +169,7 @@ def test_undo_new_file_deletes_and_redo_recreates(tmp_path):
     world = tmp_path / "world"; world.mkdir()
     journal = RecoveryJournal(world, tmp_path / "history")
     path = world / "pkg" / "__init__.py"
-    tx = journaled_create_file(path, b'"""Package."""\n', journal, operation="create_package_init")
+    tx = SourceWriteService(journal).create_file(path, b'"""Package."""\n', operation="create_package_init").transaction
     undone, _ = journal.apply_transaction(tx, "undo")
     assert not path.exists()
     redone, _ = journal.apply_transaction(undone, "redo")
@@ -181,7 +182,7 @@ def test_undo_redo_status_persists_in_sqlite_and_manifest(tmp_path):
     path = world / "app.py"; path.write_text("A = 1\n")
     history = tmp_path / "history"
     journal = RecoveryJournal(world, history)
-    tx = journaled_atomic_write(read_document(path), "A = 2\n", journal)
+    tx = SourceWriteService(journal).save_document(SaveRequest(read_document(path), "A = 2\n", "save_file", "Save File")).transaction
     undone, _ = journal.apply_transaction(tx, "undo")
     manifest = json.loads((tx.directory / "manifest.json").read_text())
     assert manifest["status"] == "undone"
