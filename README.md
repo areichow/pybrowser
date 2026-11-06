@@ -1,7 +1,5 @@
 # PyBrowser
 
-<img width="1297" height="925" alt="image" src="https://github.com/user-attachments/assets/e21d5f88-c3ae-42a1-865a-85d605104707" />
-
 PyBrowser is a Smalltalk-inspired structural browser and editor for Python source. It provides a four-pane view of a Python file or folder world:
 
 1. **Modules** selects a Python file.
@@ -312,3 +310,10 @@ Image-style deferred disk commits are documented in `UNDO_PLAN.md` but intention
 Recovery metadata is now indexed in `journal.sqlite3` per World. SQLite is authoritative for Structural History ordering, status queries, incomplete-transaction scans, pinning, retention bookkeeping, and affected-file lookup. Full before/after source snapshots and `manifest.json` remain ordinary files so every transaction retains a portable recovery record.
 
 The database enables `PRAGMA foreign_keys=ON`, `journal_mode=WAL`, `synchronous=FULL`, and `busy_timeout=5000`. Tables separate transactions from affected files and include indexes for timestamp, status, disk-commit state, and absolute path. Opening a World imports existing Revision 12.0 JSON transactions into SQLite, reconciles database rows with manifests, and marks entries damaged when snapshot files are absent. The schema includes `committed_to_disk` for the later image-style staged-commit overlay, but Revision 12.1 continues writing through to disk immediately.
+
+
+## Revision 12.2 safe Structural Undo and Redo
+
+Workspace-level **Undo Structural Change** (`Ctrl+Alt+Z`) and **Redo Structural Change** (`Ctrl+Alt+Y`) now restore journal snapshots only when every affected file matches the transaction's expected SHA-256. A mismatch blocks the operation without writing and directs the user to Structural History for comparison, Restore As, or File View. Browser, File View, Implementers, and Senders windows with unsaved edits in an affected file also block the operation and are activated for resolution.
+
+Transactions progress from `committed` or `redone` to `undone`, and from `undone` to `redone`. SQLite and `manifest.json` both persist `undone_at` and `redone_at`. Structural History now provides **Undo Selected**, **Redo Selected**, **Open File View**, and eligibility-aware controls. Successful restoration preserves file modes, uses sibling temporary files and `os.replace()`, rolls back already-restored files if a later file fails, broadcasts every affected path to all workspace windows, refreshes semantic indexes, and restores the recorded Browser location. Undoing creation of a package `__init__.py` removes the file; redo recreates it.

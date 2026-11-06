@@ -103,3 +103,15 @@ def test_all_editor_write_paths_use_recovery_journal():
     assert 'operation="save_file"' in file_view
     assert 'operation="save_member"' in query
     assert "journaled_atomic_write" in main + file_view + query
+
+
+def test_structural_undo_redo_actions_and_history_controls_exist():
+    main = Path("pybrowser/main_window.py").read_text()
+    history = Path("pybrowser/widgets/structural_history.py").read_text()
+    workspace = Path("pybrowser/workspace.py").read_text()
+    assert 'setShortcut("Ctrl+Alt+Z")' in main
+    assert 'setShortcut("Ctrl+Alt+Y")' in main
+    assert 'QPushButton("Undo Selected")' in history
+    assert 'QPushButton("Redo Selected")' in history
+    assert "unsaved_windows_for" in workspace
+    assert "restore_journal_location" in main

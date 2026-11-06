@@ -130,3 +130,63 @@ def test_sqlite_pinning_and_incomplete_queries_stay_in_sync(tmp_path):
     reloaded = next(item for item in journal.transactions() if item.transaction_id == tx.transaction_id)
     assert reloaded.pinned
     assert reloaded.status == "committing"
+
+
+def test_safe_undo_and_redo_round_trip(tmp_path):
+    world = tmp_path / "world"; world.mkdir()
+    path = world / "app.py"; path.write_text("A = 1\n")
+    journal = RecoveryJournal(world, tmp_path / "history")
+    tx = journaled_atomic_write(read_document(path), "A = 2\n", journal, operation="save_member")
+    undone, paths = journal.apply_transaction(tx, "undo")
+    assert path.read_text() == "A = 1\n"
+    assert undone.status == "undone"
+    assert paths == (path.resolve(),)
+    redone, _ = journal.apply_transaction(undone, "redo")
+    assert path.read_text() == "A = 2\n"
+    assert redone.status == "redone"
+    assert journal.latest_undo().transaction_id == tx.transaction_id
+
+
+def test_undo_refuses_hash_mismatch_without_writing(tmp_path):
+    from pybrowser.recovery import RecoveryConflictError
+    world = tmp_path / "world"; world.mkdir()
+    path = world / "app.py"; path.write_text("A = 1\n")
+    journal = RecoveryJournal(world, tmp_path / "history")
+    tx = journaled_atomic_write(read_document(path), "A = 2\n", journal)
+    path.write_text("EXTERNAL = 3\n")
+    try:
+        journal.apply_transaction(tx, "undo")
+    except RecoveryConflictError as exc:
+        assert exc.states
+    else:
+        raise AssertionError("Expected RecoveryConflictError")
+    assert path.read_text() == "EXTERNAL = 3\n"
+    assert journal.get(tx.transaction_id).status == "committed"
+
+
+def test_undo_new_file_deletes_and_redo_recreates(tmp_path):
+    world = tmp_path / "world"; world.mkdir()
+    journal = RecoveryJournal(world, tmp_path / "history")
+    path = world / "pkg" / "__init__.py"
+    tx = journaled_create_file(path, b'"""Package."""\n', journal, operation="create_package_init")
+    undone, _ = journal.apply_transaction(tx, "undo")
+    assert not path.exists()
+    redone, _ = journal.apply_transaction(undone, "redo")
+    assert path.read_bytes() == b'"""Package."""\n'
+    assert redone.status == "redone"
+
+
+def test_undo_redo_status_persists_in_sqlite_and_manifest(tmp_path):
+    world = tmp_path / "world"; world.mkdir()
+    path = world / "app.py"; path.write_text("A = 1\n")
+    history = tmp_path / "history"
+    journal = RecoveryJournal(world, history)
+    tx = journaled_atomic_write(read_document(path), "A = 2\n", journal)
+    undone, _ = journal.apply_transaction(tx, "undo")
+    manifest = json.loads((tx.directory / "manifest.json").read_text())
+    assert manifest["status"] == "undone"
+    assert manifest["undone_at"]
+    reopened = RecoveryJournal(world, history)
+    reloaded = reopened.get(tx.transaction_id)
+    assert reloaded.status == "undone"
+    assert reopened.latest_redo().transaction_id == tx.transaction_id

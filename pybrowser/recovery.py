@@ -126,6 +126,8 @@ class RecoveryJournal:
                     location_before_json TEXT,
                     location_after_json TEXT,
                     committed_at TEXT,
+                    undone_at TEXT,
+                    redone_at TEXT,
                     error TEXT,
                     damaged INTEGER NOT NULL DEFAULT 0,
                     transaction_directory TEXT NOT NULL
@@ -138,6 +140,8 @@ class RecoveryJournal:
                     encoding TEXT,
                     newline TEXT,
                     mode INTEGER,
+                    before_exists INTEGER NOT NULL DEFAULT 1,
+                    after_exists INTEGER NOT NULL DEFAULT 1,
                     before_sha256 TEXT,
                     after_sha256 TEXT,
                     before_snapshot TEXT,
@@ -154,6 +158,16 @@ class RecoveryJournal:
                 CREATE INDEX IF NOT EXISTS idx_transaction_files_path
                     ON transaction_files(absolute_path);
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(transactions)")}
+            if "undone_at" not in columns:
+                db.execute("ALTER TABLE transactions ADD COLUMN undone_at TEXT")
+            if "redone_at" not in columns:
+                db.execute("ALTER TABLE transactions ADD COLUMN redone_at TEXT")
+            file_columns = {row[1] for row in db.execute("PRAGMA table_info(transaction_files)")}
+            if "before_exists" not in file_columns:
+                db.execute("ALTER TABLE transaction_files ADD COLUMN before_exists INTEGER NOT NULL DEFAULT 1")
+            if "after_exists" not in file_columns:
+                db.execute("ALTER TABLE transaction_files ADD COLUMN after_exists INTEGER NOT NULL DEFAULT 1")
 
     @staticmethod
     def _manifest_json(value):
@@ -168,8 +182,8 @@ class RecoveryJournal:
                     id, timestamp_utc, operation, description, status, pinned,
                     committed_to_disk, world_root, writer,
                     location_before_json, location_after_json, committed_at,
-                    error, damaged, transaction_directory
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    undone_at, redone_at, error, damaged, transaction_directory
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     timestamp_utc=excluded.timestamp_utc,
                     operation=excluded.operation,
@@ -182,6 +196,8 @@ class RecoveryJournal:
                     location_before_json=excluded.location_before_json,
                     location_after_json=excluded.location_after_json,
                     committed_at=excluded.committed_at,
+                    undone_at=excluded.undone_at,
+                    redone_at=excluded.redone_at,
                     error=excluded.error,
                     damaged=excluded.damaged,
                     transaction_directory=excluded.transaction_directory
@@ -193,7 +209,8 @@ class RecoveryJournal:
                 manifest.get("world_root", str(self.world_root)), manifest.get("writer"),
                 self._manifest_json(manifest.get("location_before")),
                 self._manifest_json(manifest.get("location_after")),
-                manifest.get("committed_at"), manifest.get("error"),
+                manifest.get("committed_at"), manifest.get("undone_at"),
+                manifest.get("redone_at"), manifest.get("error"),
                 int(bool(manifest.get("damaged", False))), str(directory),
             ))
             connection.execute("DELETE FROM transaction_files WHERE transaction_id = ?", (manifest["transaction_id"],))
@@ -201,14 +218,15 @@ class RecoveryJournal:
                 connection.execute("""
                     INSERT INTO transaction_files (
                         transaction_id, file_index, absolute_path, relative_path,
-                        encoding, newline, mode, before_sha256, after_sha256,
-                        before_snapshot, after_snapshot
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        encoding, newline, mode, before_exists, after_exists,
+                        before_sha256, after_sha256, before_snapshot, after_snapshot
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     manifest["transaction_id"], index, item.get("path", ""),
                     item.get("relative_path", ""), item.get("encoding"),
-                    item.get("newline"), item.get("mode"), item.get("before_sha256"),
-                    item.get("after_sha256"), item.get("before_snapshot"),
+                    item.get("newline"), item.get("mode"),
+                    int(bool(item.get("before_exists", True))), int(bool(item.get("after_exists", True))),
+                    item.get("before_sha256"), item.get("after_sha256"), item.get("before_snapshot"),
                     item.get("after_snapshot"),
                 ))
             if owns_connection:
@@ -232,7 +250,8 @@ class RecoveryJournal:
             "world_root": row["world_root"], "writer": row["writer"],
             "location_before": parse_json(row["location_before_json"]),
             "location_after": parse_json(row["location_after_json"]),
-            "committed_at": row["committed_at"], "error": row["error"],
+            "committed_at": row["committed_at"], "undone_at": row["undone_at"],
+            "redone_at": row["redone_at"], "error": row["error"],
             "damaged": bool(row["damaged"]), "files": [
                 {**dict(item), "path": item["absolute_path"]} for item in files
             ],
@@ -314,7 +333,8 @@ class RecoveryJournal:
             "files": [{
                 "path": str(path), "relative_path": relative.as_posix(),
                 "encoding": encoding, "newline": "CRLF" if newline == "\r\n" else "LF",
-                "mode": mode, "before_sha256": sha256_bytes(before),
+                "mode": mode, "before_exists": path.exists(), "after_exists": True,
+                "before_sha256": sha256_bytes(before),
                 "after_sha256": sha256_bytes(after),
                 "before_snapshot": str(Path("before") / relative),
                 "after_snapshot": str(Path("after") / relative),
@@ -335,6 +355,9 @@ class RecoveryJournal:
         _json_write(directory / "manifest.json", manifest)
         self._upsert_manifest(directory, manifest)
         self.prune()
+        callback = getattr(self, "on_change", None)
+        if callback:
+            callback()
         return RecoveryTransaction(directory, manifest)
 
     def mark_failed(self, directory: Path, manifest: dict, message: str):
@@ -342,12 +365,18 @@ class RecoveryJournal:
         manifest["error"] = message
         _json_write(directory / "manifest.json", manifest)
         self._upsert_manifest(directory, manifest)
+        callback = getattr(self, "on_change", None)
+        if callback:
+            callback()
 
     def set_pinned(self, transaction: RecoveryTransaction, pinned: bool):
         manifest = dict(transaction.manifest)
         manifest["pinned"] = bool(pinned)
         _json_write(transaction.directory / "manifest.json", manifest)
         self._upsert_manifest(transaction.directory, manifest)
+        callback = getattr(self, "on_change", None)
+        if callback:
+            callback()
 
     def snapshot_path(self, transaction: RecoveryTransaction, side: str, file_index=0):
         key = "before_snapshot" if side == "before" else "after_snapshot"
@@ -364,8 +393,12 @@ class RecoveryJournal:
         for item in transaction.manifest.get("files", []):
             path = Path(item["absolute_path"] if "absolute_path" in item else item["path"])
             current = sha256_bytes(path.read_bytes()) if path.exists() else None
-            if current == item.get("before_sha256"): state = "current equals before"
-            elif current == item.get("after_sha256"): state = "current equals after"
+            before_exists = item.get("before_exists", transaction.manifest.get("operation") != "create_package_init")
+            after_exists = item.get("after_exists", True)
+            before_expected = item.get("before_sha256") if before_exists else None
+            after_expected = item.get("after_sha256") if after_exists else None
+            if current == before_expected: state = "current equals before"
+            elif current == after_expected: state = "current equals after"
             else: state = "current differs from both"
             states.append((path, state))
         return tuple(states)
@@ -429,6 +462,9 @@ def journaled_create_file(path: Path, data: bytes, journal: RecoveryJournal, *, 
         path, b"", data, operation=operation, description=description,
         encoding=encoding, newline=newline, mode=0o644,
     )
+    manifest["files"][0]["before_exists"] = False
+    _json_write(directory / "manifest.json", manifest)
+    journal._upsert_manifest(directory, manifest)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
@@ -446,3 +482,137 @@ def journaled_create_file(path: Path, data: bytes, journal: RecoveryJournal, *, 
     except BaseException as exc:
         journal.mark_failed(directory, manifest, str(exc))
         raise
+
+
+class RecoveryConflictError(RuntimeError):
+    def __init__(self, message, transaction=None, states=()):
+        super().__init__(message)
+        self.transaction = transaction
+        self.states = tuple(states)
+
+
+def _transaction_path(item):
+    return Path(item.get("absolute_path") or item.get("path", "")).resolve()
+
+
+def _write_snapshot_to_disk(path: Path, data: bytes, mode=None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".undo.tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if mode is not None:
+            os.chmod(temporary, int(mode))
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _recovery_set_status(self, transaction, status, **extra):
+    manifest = dict(transaction.manifest)
+    manifest["status"] = status
+    manifest.update(extra)
+    _json_write(transaction.directory / "manifest.json", manifest)
+    self._upsert_manifest(transaction.directory, manifest)
+    callback = getattr(self, "on_change", None)
+    if callback:
+        callback()
+    return RecoveryTransaction(transaction.directory, manifest)
+
+
+def _recovery_get(self, transaction_id):
+    return next((item for item in self.transactions() if item.transaction_id == transaction_id), None)
+
+
+def _recovery_latest_undo(self):
+    return next((item for item in self.transactions()
+                 if item.status in {"committed", "redone"} and not item.damaged), None)
+
+
+def _recovery_latest_redo(self):
+    return next((item for item in self.transactions()
+                 if item.status == "undone" and not item.damaged), None)
+
+
+def _recovery_apply(self, transaction, direction):
+    if direction not in {"undo", "redo"}:
+        raise ValueError(direction)
+    expected_statuses = {"committed", "redone"} if direction == "undo" else {"undone"}
+    if transaction.status not in expected_statuses:
+        raise RecoveryConflictError(
+            f"Transaction {transaction.transaction_id} is {transaction.status}, so it cannot be {direction}ne.",
+            transaction,
+        )
+    if transaction.damaged:
+        raise RecoveryConflictError("The transaction is damaged and cannot be applied automatically.", transaction)
+    source_side = "before" if direction == "undo" else "after"
+    expected_hash_key = "after_sha256" if direction == "undo" else "before_sha256"
+    states = self.inspect_state(transaction)
+    conflicts = []
+    for index, (path, state) in enumerate(states):
+        item = transaction.manifest["files"][index]
+        current = sha256_bytes(path.read_bytes()) if path.exists() else None
+        expected_exists_key = "after_exists" if direction == "undo" else "before_exists"
+        expected_exists = item.get(expected_exists_key)
+        if expected_exists is None:
+            expected_exists = not (direction == "redo" and transaction.manifest.get("operation") == "create_package_init")
+        expected = item.get(expected_hash_key) if expected_exists else None
+        if current != expected:
+            conflicts.append((path, state))
+    if conflicts:
+        raise RecoveryConflictError(
+            f"Cannot {direction} because {len(conflicts)} affected file(s) no longer match the expected hash.",
+            transaction, conflicts,
+        )
+
+    backups = []
+    changed_paths = []
+    try:
+        for index, item in enumerate(transaction.manifest.get("files", [])):
+            path = _transaction_path(item)
+            existed = path.exists()
+            current = path.read_bytes() if existed else b""
+            backups.append((path, existed, current, stat.S_IMODE(path.stat().st_mode) if existed else None))
+            snapshot = self.snapshot_path(transaction, source_side, index)
+            data = snapshot.read_bytes()
+            before_exists = item.get("before_exists")
+            after_exists = item.get("after_exists")
+            if before_exists is None:
+                before_exists = transaction.manifest.get("operation") != "create_package_init"
+            if after_exists is None:
+                after_exists = True
+            target_exists = before_exists if direction == "undo" else after_exists
+            if not target_exists:
+                if path.exists():
+                    path.unlink()
+            else:
+                _write_snapshot_to_disk(path, data, item.get("mode"))
+            changed_paths.append(path)
+    except BaseException:
+        for path, existed, data, mode in reversed(backups):
+            try:
+                if existed:
+                    _write_snapshot_to_disk(path, data, mode)
+                elif path.exists():
+                    path.unlink()
+            except OSError:
+                pass
+        raise
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+    if direction == "undo":
+        result = self.set_status(transaction, "undone", undone_at=timestamp)
+    else:
+        result = self.set_status(transaction, "redone", redone_at=timestamp)
+    return result, tuple(changed_paths)
+
+
+RecoveryJournal.set_status = _recovery_set_status
+RecoveryJournal.get = _recovery_get
+RecoveryJournal.latest_undo = _recovery_latest_undo
+RecoveryJournal.latest_redo = _recovery_latest_redo
+RecoveryJournal.apply_transaction = _recovery_apply

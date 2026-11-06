@@ -16,7 +16,7 @@ from .widgets.member_delegate import MemberDelegate
 from .widgets.code_query_dialog import CodeQueryDialog
 from .widgets.file_view import FileViewWindow
 from .widgets.browser_lists import CategoryListWidget, MemberListWidget
-from .workspace import Workspace
+from .workspace import Workspace, WorkspaceUndoError
 from .work_tasks import WorkSignals, WorldQueryTask
 from .widgets.busy_indicator import BusyIndicator
 from .code_queries import callable_name_from_label, implementers, senders
@@ -316,6 +316,14 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         tools_menu.addAction(typecheck_settings_action)
         structure_menu = self.menuBar().addMenu("&Structure")
+        undo_structure = QAction("Undo Structural Change", self)
+        undo_structure.setShortcut("Ctrl+Alt+Z")
+        undo_structure.triggered.connect(self.undo_structural_change)
+        redo_structure = QAction("Redo Structural Change", self)
+        redo_structure.setShortcut("Ctrl+Alt+Y")
+        redo_structure.triggered.connect(self.redo_structural_change)
+        structure_menu.addActions([undo_structure, redo_structure])
+        structure_menu.addSeparator()
         commands = [
             ("New Function...", self.new_function), ("New Class...", self.new_class),
             ("New Method...", self.new_method),
@@ -336,7 +344,7 @@ class MainWindow(QMainWindow):
         init_action.triggered.connect(self.create_init_file)
         navigate_menu = self.menuBar().addMenu("&Navigate")
         navigate_menu.addActions([quick_module_action, quick_symbol_action, back_action, forward_action, goto_action])
-        self.addActions([open_action, save_action, find_action, next_action, replace_action, abandon_action, new_browser_action, typecheck_action, references_action, quick_module_action, quick_symbol_action, project_find_action, back_action, forward_action, goto_action])
+        self.addActions([open_action, save_action, find_action, next_action, replace_action, abandon_action, new_browser_action, typecheck_action, references_action, quick_module_action, quick_symbol_action, project_find_action, back_action, forward_action, goto_action, undo_structure, redo_structure])
         install_window_commands(self, self.workspace, file_menu)
 
     def _typecheck_preferences(self):
@@ -1731,6 +1739,54 @@ class MainWindow(QMainWindow):
     def _restore(self, scope, category, label, fallback_row=None):
         self._select_location(scope, category, label, fallback_row)
 
+
+    def undo_structural_change(self):
+        self._perform_structural_history("undo")
+
+    def redo_structural_change(self):
+        self._perform_structural_history("redo")
+
+    def _perform_structural_history(self, direction):
+        try:
+            transaction, changed_paths = self.workspace.perform_history_action(direction)
+            verb = "Undid" if direction == "undo" else "Redid"
+            self.statusBar().showMessage(f"{verb}: {transaction.description}", 6000)
+        except WorkspaceUndoError as exc:
+            if exc.windows:
+                QMessageBox.warning(self, f"Cannot {direction.title()}", str(exc))
+                self.workspace.activate_window(exc.windows[0])
+                return
+            if exc.conflict:
+                answer = QMessageBox.question(
+                    self, f"Structural {direction.title()} Conflict",
+                    str(exc) + "\n\nOpen Structural History to compare snapshots and restore a copy?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if answer == QMessageBox.StandardButton.Yes:
+                    self.show_structural_history()
+                return
+            QMessageBox.information(self, f"Structural {direction.title()}", str(exc))
+
+    def restore_journal_location(self, location):
+        if not location:
+            return
+        path_value = location.get("module") or location.get("path")
+        if not path_value:
+            return
+        path = Path(path_value)
+        if not path.exists():
+            return
+        restore = None
+        scope = location.get("scope")
+        if scope:
+            restore = (scope, location.get("category") or "", location.get("member") or location.get("label") or "")
+        self._select_module_path(path, restore)
+        cursor_value = location.get("cursor")
+        if cursor_value is not None and self.member:
+            cursor = self.editor.textCursor()
+            cursor.setPosition(min(int(cursor_value), len(self.editor.toPlainText())))
+            self.editor.setTextCursor(cursor)
 
     def _journal_location(self):
         if not self.doc:
