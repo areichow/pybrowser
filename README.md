@@ -334,3 +334,10 @@ Revision 12C is now complete. Legacy `journaled_atomic_write`, `journaled_create
 ### Revision 12.5 journal hardening
 
 Revision 12.5 hardens the complete 12A to 12C source-integrity stack. Redo now follows `undone_at` stack order, new commits supersede abandoned redo branches, snapshots are explicitly flushed with `fsync()`, SQLite uses schema `user_version = 3`, and journal/undo methods are normal `RecoveryJournal` methods rather than runtime monkey patches. Source replacement failures remain `failed`, while reparse or notification failures after a successful commit retain `committed` and record `post_commit_error`. GUI save paths consistently catch authoritative `SourceConflictError` results and no longer offer stale-document overwrite. Startup recovery transactions can be finalized, aborted, or marked reviewed according to their disk hash state, and retention covers terminal states while preserving pinned and incomplete transactions.
+
+
+#### Revision 12.6 final 12A-12C hardening
+
+Revision 12.6 adds explicit SQLite schema 1-to-2 and 2-to-3 migrations, including safe creation of the undone-at index only after its column exists and rejection of journals newer than the supported schema. Restart reconciliation now treats a missing after snapshot as normal for prepared, committing, aborted, and pre-replacement failed transactions. If disk matches the intended after hash, Finalize Transaction reconstructs the missing after snapshot durably before recording the recovered commit. Structural History exposes Mark Not Applied, Finalize Transaction, and Mark Reviewed with state-aware enablement.
+
+New commits are persisted as committed before outstanding redo branches are superseded. Journal state transitions use BEGIN IMMEDIATE and expected-state checks, active undo/redo transactions are protected from retention, and ordinary write/rollback handling catches Exception rather than BaseException. Post-commit notification failures now return a successful SaveResult with warnings and a refreshed Document, allowing the writing editor to clear its dirty state while reporting the warning.

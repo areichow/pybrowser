@@ -72,3 +72,13 @@ def test_post_commit_reparse_failure_keeps_committed_status(tmp_path, monkeypatc
     assert path.read_text() == 'A = 2\n'
     assert tx.status == 'committed'
     assert tx.manifest['post_commit_error'] == 'reparse failed'
+
+def test_notification_failure_returns_committed_result_warning(tmp_path):
+    world = tmp_path / 'world'; world.mkdir(); path = world / 'app.py'; path.write_text('A = 1\n')
+    journal = RecoveryJournal(world, tmp_path / 'history')
+    def broken_notify(_path, _origin): raise RuntimeError('notify failed')
+    result = SourceWriteService(journal, broken_notify).save_document(
+        SaveRequest(read_document(path), 'A = 2\n', 'save_file', 'Save'))
+    assert result.document.text == 'A = 2\n'
+    assert result.warnings == ('Workspace notification failed: notify failed',)
+    assert result.transaction.status == 'committed'

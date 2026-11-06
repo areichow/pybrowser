@@ -36,9 +36,12 @@ class StructuralHistoryWindow(QMainWindow):
         after = QPushButton("Restore After As..."); after.clicked.connect(lambda: self.restore_as("after"))
         open_file = QPushButton("Open File View"); open_file.clicked.connect(self.open_file_view)
         self.pin = QPushButton("Pin"); self.pin.clicked.connect(self.toggle_pin)
+        self.abort_button = QPushButton("Mark Not Applied"); self.abort_button.clicked.connect(lambda: self.resolve_incomplete("abort"))
+        self.finalize_button = QPushButton("Finalize Transaction"); self.finalize_button.clicked.connect(lambda: self.resolve_incomplete("finalize"))
+        self.review_button = QPushButton("Mark Reviewed"); self.review_button.clicked.connect(lambda: self.resolve_incomplete("review"))
         refresh = QPushButton("Refresh"); refresh.clicked.connect(self.refresh)
         buttons = QHBoxLayout()
-        for button in (self.undo_button, self.redo_button, before, after, open_file, self.pin):
+        for button in (self.undo_button, self.redo_button, self.abort_button, self.finalize_button, self.review_button, before, after, open_file, self.pin):
             buttons.addWidget(button)
         buttons.addStretch(1); buttons.addWidget(refresh)
         central = QWidget(); layout = QVBoxLayout(central)
@@ -85,6 +88,11 @@ class StructuralHistoryWindow(QMainWindow):
         self.pin.setText("Unpin" if tx.pinned else "Pin")
         self.undo_button.setEnabled(tx.status in {"committed", "redone"} and not tx.damaged)
         self.redo_button.setEnabled(tx.status == "undone" and not tx.damaged)
+        state_values = {state for _path, state in states}
+        incomplete = tx.status in {"prepared", "committing"}
+        self.abort_button.setEnabled(incomplete and state_values == {"current equals before"})
+        self.finalize_button.setEnabled(incomplete and state_values == {"current equals after"})
+        self.review_button.setEnabled(incomplete and state_values == {"current differs from both"})
         if files:
             try:
                 before = self.journal.snapshot_path(tx, "before").read_text(
@@ -97,6 +105,18 @@ class StructuralHistoryWindow(QMainWindow):
                 self.diff.setPlainText("\n".join(diff) or "No textual differences")
             except OSError as exc:
                 self.diff.setPlainText(f"Snapshot unavailable: {exc}")
+
+    def resolve_incomplete(self, action):
+        tx = self.current_transaction()
+        if tx is None:
+            return
+        try:
+            result = self.journal.resolve_incomplete(tx, action)
+            self.statusBar().showMessage(f"Recovery transaction marked {result.status}", 6000)
+            self.workspace.history_changed.emit()
+        except Exception as exc:
+            QMessageBox.warning(self, "Recovery action refused", str(exc))
+        self.refresh()
 
     def apply_selected(self, direction):
         tx = self.current_transaction()

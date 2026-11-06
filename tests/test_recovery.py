@@ -229,3 +229,84 @@ def test_schema_user_version_is_current(tmp_path):
     import sqlite3
     with sqlite3.connect(journal.database_path) as db:
         assert db.execute('PRAGMA user_version').fetchone()[0] == 3
+
+def _create_legacy_database(path, version):
+    import sqlite3
+    with sqlite3.connect(path) as db:
+        db.executescript('''
+            CREATE TABLE transactions (
+                id TEXT PRIMARY KEY, timestamp_utc TEXT NOT NULL, operation TEXT NOT NULL,
+                description TEXT NOT NULL, status TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0,
+                committed_to_disk INTEGER NOT NULL DEFAULT 1, world_root TEXT NOT NULL,
+                writer TEXT, location_before_json TEXT, location_after_json TEXT,
+                committed_at TEXT, error TEXT, damaged INTEGER NOT NULL DEFAULT 0,
+                transaction_directory TEXT NOT NULL
+            );
+            CREATE TABLE transaction_files (
+                transaction_id TEXT NOT NULL, file_index INTEGER NOT NULL,
+                absolute_path TEXT NOT NULL, relative_path TEXT NOT NULL,
+                encoding TEXT, newline TEXT, mode INTEGER, before_sha256 TEXT,
+                after_sha256 TEXT, before_snapshot TEXT, after_snapshot TEXT,
+                PRIMARY KEY (transaction_id, file_index)
+            );
+        ''')
+        if version >= 2:
+            db.execute('ALTER TABLE transactions ADD COLUMN undone_at TEXT')
+            db.execute('ALTER TABLE transactions ADD COLUMN redone_at TEXT')
+            db.execute('ALTER TABLE transaction_files ADD COLUMN before_exists INTEGER NOT NULL DEFAULT 1')
+            db.execute('ALTER TABLE transaction_files ADD COLUMN after_exists INTEGER NOT NULL DEFAULT 1')
+        db.execute(f'PRAGMA user_version = {version}')
+
+
+def test_real_schema_1_and_2_databases_migrate(tmp_path):
+    import sqlite3
+    from pybrowser.recovery import world_id
+    for version in (1, 2):
+        world = tmp_path / f'world{version}'; world.mkdir()
+        history = tmp_path / f'history{version}'; root = history / world_id(world); root.mkdir(parents=True)
+        (root / 'world.json').write_text('{}')
+        _create_legacy_database(root / 'journal.sqlite3', version)
+        journal = RecoveryJournal(world, history)
+        with sqlite3.connect(journal.database_path) as db:
+            assert db.execute('PRAGMA user_version').fetchone()[0] == 3
+            columns = {row[1] for row in db.execute('PRAGMA table_info(transactions)')}
+            assert {'undone_at', 'redone_at', 'post_commit_error', 'post_commit_error_at'} <= columns
+            indexes = {row[1] for row in db.execute('PRAGMA index_list(transactions)')}
+            assert 'idx_transactions_undone' in indexes
+
+
+def test_incomplete_restart_is_not_damaged_without_after_snapshot(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    history=tmp_path/'history'; journal=RecoveryJournal(world,history)
+    directory,manifest,after=journal.record_write(path,path.read_bytes(),b'A = 2\n')
+    assert not after.exists()
+    reopened=RecoveryJournal(world,history)
+    tx=reopened.incomplete()[0]
+    assert not tx.damaged
+
+
+def test_finalize_incomplete_reconstructs_missing_after_snapshot(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    history=tmp_path/'history'; journal=RecoveryJournal(world,history)
+    directory,manifest,after=journal.record_write(path,path.read_bytes(),b'A = 2\n')
+    path.write_bytes(b'A = 2\n')
+    reopened=RecoveryJournal(world,history); tx=reopened.incomplete()[0]
+    assert not reopened.snapshot_path(tx,'after').exists()
+    result=reopened.resolve_incomplete(tx,'finalize')
+    assert result.status == 'committed'
+    assert reopened.snapshot_path(result,'after').read_bytes() == b'A = 2\n'
+
+
+def test_new_commit_is_committed_before_redo_branch_superseded(tmp_path, monkeypatch):
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 0\n')
+    journal=RecoveryJournal(world,tmp_path/'history'); service=SourceWriteService(journal)
+    old=service.save_document(SaveRequest(read_document(path),'A = 1\n','save_file','old')).transaction
+    journal.apply_transaction(old,'undo')
+    original=journal.supersede_redo_branch
+    observed=[]
+    def inspect(excluding=None):
+        observed.append(journal.get(excluding).status)
+        return original(excluding)
+    monkeypatch.setattr(journal,'supersede_redo_branch',inspect)
+    service.save_document(SaveRequest(read_document(path),'A = 2\n','save_file','new'))
+    assert observed == ['committed']

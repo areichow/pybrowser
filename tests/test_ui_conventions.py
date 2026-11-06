@@ -118,3 +118,11 @@ def test_structural_undo_redo_actions_and_history_controls_exist():
     assert 'QPushButton("Redo Selected")' in history
     assert "unsaved_windows_for" in workspace
     assert "restore_journal_location" in main
+
+
+def test_incomplete_recovery_actions_are_exposed_in_history():
+    history = Path("pybrowser/widgets/structural_history.py").read_text()
+    assert 'QPushButton("Mark Not Applied")' in history
+    assert 'QPushButton("Finalize Transaction")' in history
+    assert 'QPushButton("Mark Reviewed")' in history
+    assert 'resolve_incomplete(tx, action)' in history

@@ -4,7 +4,6 @@ from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QLabel, QListWidget, QMainWindow, QMessageBox, QSplitter, QVBoxLayout, QWidget
 from .editor import Editor
 from ..parser import ParseError, read_document, replacement
-from ..saving import changed
 from ..source_write_service import SaveRequest, SourceConflictError, SourcePostCommitError
 from ..windowing import install_window_commands
 from ..member_projection import MemberProjection, project_member, restore_member
@@ -94,6 +93,8 @@ class CodeQueryDialog(QMainWindow):
             ))
             self.current_document = result.document
             self.preview.document().setModified(False)
+            if result.warnings:
+                QMessageBox.warning(self, "Committed with warning", "\n".join(result.warnings))
         except SourceConflictError as exc: QMessageBox.warning(self, "File changed", str(exc))
         except SourcePostCommitError as exc: QMessageBox.warning(self, "Committed with warning", str(exc))
         except (OSError, ParseError) as exc: QMessageBox.critical(self, "Save failed", str(exc))

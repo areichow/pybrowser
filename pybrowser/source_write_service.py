@@ -13,8 +13,11 @@ from .saving import changed
 class SourceWriteError(RuntimeError): pass
 class SourceConflictError(SourceWriteError): pass
 class SourcePostCommitError(SourceWriteError):
-    def __init__(self, message, transaction):
-        super().__init__(message); self.transaction = transaction
+    def __init__(self, message, transaction, document=None, changed_paths=()):
+        super().__init__(message)
+        self.transaction = transaction
+        self.document = document
+        self.changed_paths = tuple(changed_paths)
 
 @dataclass(frozen=True, slots=True)
 class SaveRequest:
@@ -31,6 +34,7 @@ class SaveResult:
     document: Document
     transaction: RecoveryTransaction
     changed_paths: tuple[Path, ...]
+    warnings: tuple[str, ...] = ()
 
 class SourceWriteService:
     def __init__(self, journal: RecoveryJournal, notify: Callable | None = None):
@@ -53,12 +57,23 @@ class SourceWriteService:
             if temporary.exists(): temporary.unlink()
     def _post_commit(self, path, transaction, origin):
         try:
-            refreshed=read_document(path)
-            if self.notify: self.notify(path, origin)
-            return refreshed
-        except BaseException as exc:
-            transaction=self.journal.mark_post_commit_error(transaction, str(exc))
-            raise SourcePostCommitError(f"The source was committed, but post-commit refresh failed: {exc}", transaction) from exc
+            refreshed = read_document(path)
+        except Exception as exc:
+            transaction = self.journal.mark_post_commit_error(transaction, str(exc))
+            raise SourcePostCommitError(
+                f"The source was committed, but reparsing failed: {exc}",
+                transaction, changed_paths=(path,),
+            ) from exc
+        warnings = []
+        if self.notify:
+            try:
+                self.notify(path, origin)
+            except Exception as exc:
+                message = f"Workspace notification failed: {exc}"
+                transaction = self.journal.mark_post_commit_error(transaction, message)
+                warnings.append(message)
+        return refreshed, transaction, tuple(warnings)
+
     def save_document(self, request: SaveRequest) -> SaveResult:
         document=request.document; path=Path(document.path).resolve()
         validate(request.text, str(path))
@@ -66,13 +81,13 @@ class SourceWriteService:
         before=path.read_bytes(); after=request.text.encode(document.encoding); mode=stat.S_IMODE(path.stat().st_mode)
         directory, manifest, after_snapshot=self.journal.record_write(path,before,after,operation=str(request.operation),description=request.description,encoding=document.encoding,newline=document.newline,mode=mode,location_before=request.location_before,location_after=request.location_after)
         try: self._replace_bytes(path,after,mode)
-        except BaseException as exc:
+        except Exception as exc:
             self.journal.mark_failed(directory,manifest,str(exc)); raise
         try: transaction=self.journal.finalize(directory,manifest,after_snapshot,after)
-        except BaseException as exc:
+        except Exception as exc:
             raise SourcePostCommitError(f"The source was replaced, but journal finalization failed: {exc}", RecoveryTransaction(directory,manifest)) from exc
-        refreshed=self._post_commit(path,transaction,request.origin)
-        return SaveResult(refreshed,transaction,(path,))
+        refreshed, transaction, warnings = self._post_commit(path, transaction, request.origin)
+        return SaveResult(refreshed, transaction, (path,), warnings)
     def create_file(self,path:Path,data:bytes,*,operation="create_file",description="Create file",encoding="utf-8",newline="\n",location_before=None,location_after=None,origin=None)->SaveResult:
         path=Path(path).resolve()
         if path.exists(): raise SourceConflictError(f"{path} already exists")
@@ -81,10 +96,10 @@ class SourceWriteService:
         manifest["files"][0]["before_exists"]=False; self.journal.update_prepared(directory,manifest)
         try:
             path.parent.mkdir(parents=True,exist_ok=True); self._replace_bytes(path,data,0o644)
-        except BaseException as exc:
+        except Exception as exc:
             self.journal.mark_failed(directory,manifest,str(exc)); raise
         try: transaction=self.journal.finalize(directory,manifest,after_snapshot,data)
-        except BaseException as exc:
+        except Exception as exc:
             raise SourcePostCommitError(f"The file was created, but journal finalization failed: {exc}",RecoveryTransaction(directory,manifest)) from exc
-        refreshed=self._post_commit(path,transaction,origin)
-        return SaveResult(refreshed,transaction,(path,))
+        refreshed, transaction, warnings = self._post_commit(path, transaction, origin)
+        return SaveResult(refreshed, transaction, (path,), warnings)

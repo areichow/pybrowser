@@ -10,7 +10,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TypedDict, NotRequired
+from typing import TypedDict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -21,6 +21,9 @@ except ImportError:
 
 FORMAT_VERSION = 3
 SCHEMA_VERSION = 3
+
+class RecoverySchemaError(RuntimeError):
+    pass
 
 class TransactionStatus(StrEnum):
     PREPARED = "prepared"
@@ -42,6 +45,9 @@ class OperationKind(StrEnum):
     RENAME_CATEGORY = "rename_category"
     CONVERT_METHOD_KIND = "convert_method_kind"
     CREATE_PACKAGE_INIT = "create_package_init"
+    ADD_FUNCTION = "add_function"
+    ADD_CLASS = "add_class"
+    ADD_METHOD = "add_method"
     STRUCTURAL_EDIT = "structural_edit"
 
 class TransactionFileManifest(TypedDict, total=False):
@@ -198,71 +204,81 @@ class RecoveryJournal:
         with self._connect() as db:
             db.execute("PRAGMA journal_mode = WAL")
             db.execute("PRAGMA synchronous = FULL")
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS transactions (
-                    id TEXT PRIMARY KEY,
-                    timestamp_utc TEXT NOT NULL,
-                    operation TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    pinned INTEGER NOT NULL DEFAULT 0,
-                    committed_to_disk INTEGER NOT NULL DEFAULT 1,
-                    world_root TEXT NOT NULL,
-                    writer TEXT,
-                    location_before_json TEXT,
-                    location_after_json TEXT,
-                    committed_at TEXT,
-                    undone_at TEXT,
-                    redone_at TEXT,
-                    error TEXT,
-                    post_commit_error TEXT,
-                    post_commit_error_at TEXT,
-                    damaged INTEGER NOT NULL DEFAULT 0,
-                    transaction_directory TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS transaction_files (
-                    transaction_id TEXT NOT NULL,
-                    file_index INTEGER NOT NULL,
-                    absolute_path TEXT NOT NULL,
-                    relative_path TEXT NOT NULL,
-                    encoding TEXT,
-                    newline TEXT,
-                    mode INTEGER,
-                    before_exists INTEGER NOT NULL DEFAULT 1,
-                    after_exists INTEGER NOT NULL DEFAULT 1,
-                    before_sha256 TEXT,
-                    after_sha256 TEXT,
-                    before_snapshot TEXT,
-                    after_snapshot TEXT,
-                    PRIMARY KEY (transaction_id, file_index),
-                    FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_transactions_timestamp
-                    ON transactions(timestamp_utc DESC);
-                CREATE INDEX IF NOT EXISTS idx_transactions_status
-                    ON transactions(status);
-                CREATE INDEX IF NOT EXISTS idx_transactions_undone
-                    ON transactions(undone_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_transactions_disk
-                    ON transactions(committed_to_disk, timestamp_utc);
-                CREATE INDEX IF NOT EXISTS idx_transaction_files_path
-                    ON transaction_files(absolute_path);
-            """)
-            columns = {row[1] for row in db.execute("PRAGMA table_info(transactions)")}
-            if "undone_at" not in columns:
-                db.execute("ALTER TABLE transactions ADD COLUMN undone_at TEXT")
-            if "redone_at" not in columns:
-                db.execute("ALTER TABLE transactions ADD COLUMN redone_at TEXT")
-            if "post_commit_error" not in columns:
-                db.execute("ALTER TABLE transactions ADD COLUMN post_commit_error TEXT")
-            if "post_commit_error_at" not in columns:
-                db.execute("ALTER TABLE transactions ADD COLUMN post_commit_error_at TEXT")
-            file_columns = {row[1] for row in db.execute("PRAGMA table_info(transaction_files)")}
-            if "before_exists" not in file_columns:
-                db.execute("ALTER TABLE transaction_files ADD COLUMN before_exists INTEGER NOT NULL DEFAULT 1")
-            if "after_exists" not in file_columns:
-                db.execute("ALTER TABLE transaction_files ADD COLUMN after_exists INTEGER NOT NULL DEFAULT 1")
-            db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if version > SCHEMA_VERSION:
+                raise RecoverySchemaError(f"Journal schema {version} is newer than supported schema {SCHEMA_VERSION}.")
+            if "transactions" not in tables:
+                self._create_schema(db)
+                db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                return
+            # Revision 12.1 databases did not set user_version. Infer their schema.
+            if version == 0:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(transactions)")}
+                version = 2 if "undone_at" in columns else 1
+            while version < SCHEMA_VERSION:
+                with db:
+                    if version == 1:
+                        self._migrate_1_to_2(db)
+                    elif version == 2:
+                        self._migrate_2_to_3(db)
+                    version += 1
+                    db.execute(f"PRAGMA user_version = {version}")
+            self._create_indexes(db)
+
+    @staticmethod
+    def _create_schema(db):
+        db.executescript("""
+            CREATE TABLE transactions (
+                id TEXT PRIMARY KEY, timestamp_utc TEXT NOT NULL,
+                operation TEXT NOT NULL, description TEXT NOT NULL,
+                status TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0,
+                committed_to_disk INTEGER NOT NULL DEFAULT 1,
+                world_root TEXT NOT NULL, writer TEXT,
+                location_before_json TEXT, location_after_json TEXT,
+                committed_at TEXT, undone_at TEXT, redone_at TEXT,
+                error TEXT, post_commit_error TEXT, post_commit_error_at TEXT,
+                damaged INTEGER NOT NULL DEFAULT 0,
+                transaction_directory TEXT NOT NULL
+            );
+            CREATE TABLE transaction_files (
+                transaction_id TEXT NOT NULL, file_index INTEGER NOT NULL,
+                absolute_path TEXT NOT NULL, relative_path TEXT NOT NULL,
+                encoding TEXT, newline TEXT, mode INTEGER,
+                before_exists INTEGER NOT NULL DEFAULT 1,
+                after_exists INTEGER NOT NULL DEFAULT 1,
+                before_sha256 TEXT, after_sha256 TEXT,
+                before_snapshot TEXT, after_snapshot TEXT,
+                PRIMARY KEY (transaction_id, file_index),
+                FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE
+            );
+        """)
+        RecoveryJournal._create_indexes(db)
+
+    @staticmethod
+    def _create_indexes(db):
+        db.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp_utc DESC);
+            CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);
+            CREATE INDEX IF NOT EXISTS idx_transactions_undone ON transactions(undone_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_transactions_disk ON transactions(committed_to_disk, timestamp_utc);
+            CREATE INDEX IF NOT EXISTS idx_transaction_files_path ON transaction_files(absolute_path);
+        """)
+
+    @staticmethod
+    def _migrate_1_to_2(db):
+        columns = {row[1] for row in db.execute("PRAGMA table_info(transactions)")}
+        if "undone_at" not in columns: db.execute("ALTER TABLE transactions ADD COLUMN undone_at TEXT")
+        if "redone_at" not in columns: db.execute("ALTER TABLE transactions ADD COLUMN redone_at TEXT")
+        file_columns = {row[1] for row in db.execute("PRAGMA table_info(transaction_files)")}
+        if "before_exists" not in file_columns: db.execute("ALTER TABLE transaction_files ADD COLUMN before_exists INTEGER NOT NULL DEFAULT 1")
+        if "after_exists" not in file_columns: db.execute("ALTER TABLE transaction_files ADD COLUMN after_exists INTEGER NOT NULL DEFAULT 1")
+
+    @staticmethod
+    def _migrate_2_to_3(db):
+        columns = {row[1] for row in db.execute("PRAGMA table_info(transactions)")}
+        if "post_commit_error" not in columns: db.execute("ALTER TABLE transactions ADD COLUMN post_commit_error TEXT")
+        if "post_commit_error_at" not in columns: db.execute("ALTER TABLE transactions ADD COLUMN post_commit_error_at TEXT")
 
     @staticmethod
     def _manifest_json(value):
@@ -376,11 +392,16 @@ class RecoveryJournal:
                 manifest.setdefault("format", FORMAT_VERSION)
                 manifest.setdefault("committed_to_disk", True)
                 damaged = False
+                status = manifest.get("status", "unknown")
+                require_after = status in {
+                    TransactionStatus.COMMITTED.value, TransactionStatus.UNDONE.value,
+                    TransactionStatus.REDONE.value, TransactionStatus.SUPERSEDED.value,
+                }
                 for item in manifest.get("files", []):
-                    for key in ("before_snapshot", "after_snapshot"):
-                        relative = item.get(key)
-                        if relative and not (directory / relative).exists():
-                            damaged = True
+                    before_relative = item.get("before_snapshot")
+                    after_relative = item.get("after_snapshot")
+                    if before_relative and not (directory / before_relative).exists(): damaged = True
+                    if require_after and after_relative and not (directory / after_relative).exists(): damaged = True
                 manifest["damaged"] = damaged
                 self._upsert_manifest(directory, manifest, db)
                 if damaged:
@@ -456,11 +477,11 @@ class RecoveryJournal:
 
     def finalize(self, directory: Path, manifest: dict, after_path: Path, after: bytes):
         _write_durable_bytes(after_path, after)
-        self.supersede_redo_branch()
         manifest["status"] = TransactionStatus.COMMITTED.value
         manifest["committed_at"] = datetime.now(timezone.utc).isoformat()
         _json_write(directory / "manifest.json", manifest)
         self._upsert_manifest(directory, manifest)
+        self.supersede_redo_branch(excluding=manifest["transaction_id"])
         self.prune()
         callback = getattr(self, "on_change", None)
         if callback:
@@ -529,17 +550,39 @@ class RecoveryJournal:
             row = db.execute("SELECT * FROM transactions WHERE status = ? AND damaged = 0 ORDER BY undone_at DESC LIMIT 1", (TransactionStatus.UNDONE.value,)).fetchone()
             return self._transaction_from_row(db, row)
 
-    def set_status(self, transaction, status, **extra):
-        manifest = dict(transaction.manifest); manifest["status"] = str(status); manifest.update(extra)
-        _json_write(transaction.directory / "manifest.json", manifest); self._upsert_manifest(transaction.directory, manifest)
+    def set_status(self, transaction, status, expected_statuses=None, **extra):
+        status = str(status)
+        manifest = dict(transaction.manifest)
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute("SELECT status FROM transactions WHERE id = ?", (transaction.transaction_id,)).fetchone()
+            if current is None:
+                raise RecoveryConflictError("The transaction no longer exists.", transaction)
+            if expected_statuses and current[0] not in set(expected_statuses):
+                raise RecoveryConflictError(f"Transaction state changed from {transaction.status} to {current[0]}.", transaction)
+            manifest["status"] = status; manifest.update(extra)
+            _json_write(transaction.directory / "manifest.json", manifest)
+            self._upsert_manifest(transaction.directory, manifest, db)
         callback = getattr(self, "on_change", None)
         if callback: callback()
         return RecoveryTransaction(transaction.directory, manifest)
 
-    def supersede_redo_branch(self):
-        for transaction in self.transactions():
-            if transaction.status == TransactionStatus.UNDONE.value:
-                self.set_status(transaction, TransactionStatus.SUPERSEDED.value, superseded_at=datetime.now(timezone.utc).isoformat())
+    def supersede_redo_branch(self, excluding=None):
+        now = datetime.now(timezone.utc).isoformat()
+        changed = []
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute("SELECT id, transaction_directory FROM transactions WHERE status = ? AND id != ?", (TransactionStatus.UNDONE.value, excluding or "")).fetchall()
+            for row in rows:
+                db.execute("UPDATE transactions SET status = ? WHERE id = ? AND status = ?", (TransactionStatus.SUPERSEDED.value, row["id"], TransactionStatus.UNDONE.value))
+                if db.total_changes:
+                    changed.append((row["id"], Path(row["transaction_directory"])))
+        for transaction_id, directory in changed:
+            tx = self.get(transaction_id)
+            if tx:
+                manifest = dict(tx.manifest); manifest["status"] = TransactionStatus.SUPERSEDED.value; manifest["superseded_at"] = now
+                _json_write(directory / "manifest.json", manifest)
+                self._upsert_manifest(directory, manifest)
 
     def mark_post_commit_error(self, transaction, message):
         return self.set_status(transaction, transaction.status, post_commit_error=message, post_commit_error_at=datetime.now(timezone.utc).isoformat())
@@ -548,15 +591,18 @@ class RecoveryJournal:
         states = {state for _path, state in self.inspect_state(transaction)}
         now = datetime.now(timezone.utc).isoformat()
         if action == "abort" and states == {"current equals before"}:
-            return self.set_status(transaction, TransactionStatus.ABORTED.value, recovered_at=now)
+            return self.set_status(transaction, TransactionStatus.ABORTED.value, expected_statuses=INCOMPLETE_STATES, recovered_at=now)
         if action == "finalize" and states == {"current equals after"}:
             for index, item in enumerate(transaction.manifest.get("files", [])):
+                path = _transaction_path(item)
+                current = path.read_bytes() if path.exists() else b""
+                if sha256_bytes(current) != item.get("after_sha256"):
+                    raise RecoveryConflictError("The current file no longer matches the intended after hash.", transaction)
                 after = self.snapshot_path(transaction, "after", index)
-                if not after.exists():
-                    raise RecoveryConflictError("The after snapshot is missing.", transaction)
-            return self.set_status(transaction, TransactionStatus.COMMITTED.value, recovered_at=now, committed_at=transaction.manifest.get("committed_at") or now)
+                if not after.exists(): _write_durable_bytes(after, current)
+            return self.set_status(transaction, TransactionStatus.COMMITTED.value, expected_statuses=INCOMPLETE_STATES, recovered_at=now, committed_at=transaction.manifest.get("committed_at") or now)
         if action == "review":
-            return self.set_status(transaction, TransactionStatus.REVIEWED.value, reviewed_at=now)
+            return self.set_status(transaction, TransactionStatus.REVIEWED.value, expected_statuses=INCOMPLETE_STATES, reviewed_at=now)
         raise RecoveryConflictError("The selected recovery action is not safe for the current disk state.", transaction, self.inspect_state(transaction))
 
     def apply_transaction(self, transaction, direction):
@@ -585,7 +631,7 @@ class RecoveryJournal:
                 if target_exists: _write_snapshot_to_disk(path, self.snapshot_path(transaction, source_side, index).read_bytes(), item.get("mode"))
                 elif path.exists(): path.unlink(); _fsync_directory(path.parent)
                 changed.append(path)
-        except BaseException:
+        except Exception:
             for path, existed, data, mode in reversed(backups):
                 try:
                     if existed: _write_snapshot_to_disk(path, data, mode)
@@ -593,7 +639,7 @@ class RecoveryJournal:
                 except OSError: pass
             raise
         now=datetime.now(timezone.utc).isoformat()
-        result=self.set_status(transaction, TransactionStatus.UNDONE.value, undone_at=now) if direction == "undo" else self.set_status(transaction, TransactionStatus.REDONE.value, redone_at=now)
+        result=self.set_status(transaction, TransactionStatus.UNDONE.value, expected_statuses=expected_statuses, undone_at=now) if direction == "undo" else self.set_status(transaction, TransactionStatus.REDONE.value, expected_statuses=expected_statuses, redone_at=now)
         return result, tuple(changed)
 
     def database_settings(self):
@@ -606,7 +652,9 @@ class RecoveryJournal:
             }
 
     def prune(self):
-        completed = [item for item in self.transactions() if item.status in TERMINAL_STATES and not item.pinned]
+        all_transactions = self.transactions()
+        protected_ids = {item.transaction_id for item in all_transactions if item.status in {TransactionStatus.COMMITTED.value, TransactionStatus.REDONE.value, TransactionStatus.UNDONE.value}}
+        completed = [item for item in all_transactions if item.status in TERMINAL_STATES and not item.pinned and item.transaction_id not in protected_ids]
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.min_days)
         total = sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file())
         removed = []

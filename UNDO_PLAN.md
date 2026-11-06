@@ -198,3 +198,8 @@ Removed the remaining parallel write APIs and converted recovery/I/O tests to `S
 #### Revision 12.5 hardening
 
 12A to 12C are hardened with durable snapshot flushing, formal SQLite schema version 3, typed transaction statuses and operations, redo stack ordering by `undone_at`, redo-branch supersession, post-commit warning metadata, explicit incomplete-transaction disposition, broader terminal-state retention, and failure-injection/branching-history coverage. The delivery labels are now: 12A Recovery Journal, 12B Structural Undo/Redo, 12C Shared Write Service, 12D Git Context and Multi-file Transactions, and 12E Journal-only Staging Overlay.
+
+
+##### Revision 12.6 final hardening
+
+Completed legacy SQLite migrations, restart-aware snapshot requirements, missing-after reconstruction, Structural History recovery disposition controls, commit-before-supersede ordering, conditional state transitions, active-chain retention protection, and post-commit warning results. Revision 12A through 12C can now serve as the stable foundation for 12D.

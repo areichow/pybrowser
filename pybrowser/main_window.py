@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QMenu, QMessageBox, QSplitter, QStatusBar, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
-from .parser import ParseError, read_document, replacement, validate
+from .parser import ParseError, read_document, replacement
 from .project import ModuleEntry, World, open_world
 from .index_cache import ModuleIndexCache
 from .indexing import IndexSignals, IndexWorldTask, ModuleIndexResult
@@ -1730,10 +1730,20 @@ class MainWindow(QMainWindow):
                 self.editor.setTextCursor(cursor)
             self._update_modified_indicator(False)
             self.statusBar().showMessage("Saved", 5000)
+            if result.warnings:
+                QMessageBox.warning(self, "Committed with warning", "\n".join(result.warnings))
         except ParseError as exc:
             QMessageBox.critical(self, "Syntax error", f"{exc}\n\nLine: {exc.line or '?'}  Column: {exc.column or '?'}")
             if exc.line:
                 self._highlight_error(exc.line, exc.column or 1)
+        except SourceConflictError as exc:
+            QMessageBox.warning(self, "File changed", str(exc))
+        except SourcePostCommitError as exc:
+            if exc.document is not None:
+                self.doc = exc.document
+                self.editor.document().setModified(False)
+                self.setWindowModified(False)
+            QMessageBox.warning(self, "Committed with warning", str(exc))
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
 
