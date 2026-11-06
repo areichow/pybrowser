@@ -191,3 +191,41 @@ def test_undo_redo_status_persists_in_sqlite_and_manifest(tmp_path):
     reloaded = reopened.get(tx.transaction_id)
     assert reloaded.status == "undone"
     assert reopened.latest_redo().transaction_id == tx.transaction_id
+
+def test_redo_uses_most_recent_undo_order(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 0\n')
+    journal=RecoveryJournal(world,tmp_path/'history'); service=SourceWriteService(journal)
+    first=service.save_document(SaveRequest(read_document(path),'A = 1\n','save_file','one')).transaction
+    second=service.save_document(SaveRequest(read_document(path),'A = 2\n','save_file','two')).transaction
+    second_undone,_=journal.apply_transaction(second,'undo')
+    first_undone,_=journal.apply_transaction(first,'undo')
+    assert journal.latest_redo().transaction_id == first.transaction_id
+    first_redone,_=journal.apply_transaction(first_undone,'redo')
+    assert path.read_text() == 'A = 1\n'
+    assert journal.latest_redo().transaction_id == second.transaction_id
+
+def test_new_commit_supersedes_redo_branch(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 0\n')
+    journal=RecoveryJournal(world,tmp_path/'history'); service=SourceWriteService(journal)
+    old=service.save_document(SaveRequest(read_document(path),'A = 1\n','save_file','old')).transaction
+    undone,_=journal.apply_transaction(old,'undo')
+    service.save_document(SaveRequest(read_document(path),'A = 2\n','save_file','branch'))
+    assert journal.get(old.transaction_id).status == 'superseded'
+    assert journal.latest_redo() is None
+
+def test_incomplete_resolution_actions(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    journal=RecoveryJournal(world,tmp_path/'history')
+    directory,manifest,after=journal.record_write(path,path.read_bytes(),b'A = 2\n')
+    tx=journal.incomplete()[0]
+    assert journal.resolve_incomplete(tx,'abort').status == 'aborted'
+    directory,manifest,after=journal.record_write(path,path.read_bytes(),b'A = 2\n')
+    path.write_bytes(b'A = 2\n'); after.parent.mkdir(parents=True,exist_ok=True); after.write_bytes(b'A = 2\n')
+    tx=journal.incomplete()[0]
+    assert journal.resolve_incomplete(tx,'finalize').status == 'committed'
+
+def test_schema_user_version_is_current(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); journal=RecoveryJournal(world,tmp_path/'history')
+    import sqlite3
+    with sqlite3.connect(journal.database_path) as db:
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 3

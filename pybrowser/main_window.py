@@ -40,7 +40,7 @@ from .semantic import analyze_source
 from .semantic_queries import references_in_world
 from .diagnostic_aggregation import DiagnosticAggregation, decorate
 from .member_projection import MemberProjection, project_member, restore_member
-from .source_write_service import SaveRequest, SourceConflictError
+from .source_write_service import SaveRequest, SourceConflictError, SourcePostCommitError
 from .widgets.structural_history import StructuralHistoryWindow
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
@@ -1702,7 +1702,8 @@ class MainWindow(QMainWindow):
     def save(self):
         if not self.doc or not self.member:
             return
-        if changed(self.doc) and QMessageBox.question(self, "File changed", "The file changed outside PyBrowser. Overwrite it?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+        if changed(self.doc):
+            QMessageBox.warning(self, "File changed", "The file changed outside PyBrowser. Reload it before saving; PyBrowser will not overwrite a stale Document.")
             return
         bookmark = self._capture_browser_selection()
         path = self.doc.path

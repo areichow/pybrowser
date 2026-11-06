@@ -12,7 +12,7 @@ from .file_find_dialog import FileFindDialog
 from ..file_search import compile_pattern, find_hits
 from ..parser import ParseError, read_document
 from ..saving import changed
-from ..source_write_service import SaveRequest
+from ..source_write_service import SaveRequest, SourceConflictError, SourcePostCommitError
 from ..windowing import install_window_commands
 
 
@@ -150,14 +150,14 @@ class FileViewWindow(QMainWindow):
         self.editor.setTextCursor(cursor); self.editor.centerCursor(); self.editor.setFocus()
 
     def save(self):
-        if changed(self.document_model):
-            QMessageBox.warning(self, "File changed", "The file changed in another window. Reload it before saving."); return
         text = self.editor.toPlainText()
         try:
             result = self.workspace.write_service.save_document(SaveRequest(
                 self.document_model, text, "save_file", f"Save File View {self.path.name}", origin=self,
             ))
             self.document_model = result.document; self.editor.document().setModified(False)
+        except SourceConflictError as exc: QMessageBox.warning(self, "File changed", str(exc))
+        except SourcePostCommitError as exc: QMessageBox.warning(self, "Committed with warning", str(exc))
         except (OSError, ParseError) as exc: QMessageBox.critical(self, "Save failed", str(exc))
 
     def abandon(self):

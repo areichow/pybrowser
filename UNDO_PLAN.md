@@ -193,3 +193,8 @@ All active source mutation paths now use `SourceWriteService`. The service owns 
 ##### Revision 12.4 Revision 12C completion
 
 Removed the remaining parallel write APIs and converted recovery/I/O tests to `SourceWriteService`. The Recovery Journal now exposes `update_prepared()` for the file-existence metadata adjustment required by new-file transactions. There is one supported source mutation path, including application code and tests.
+
+
+#### Revision 12.5 hardening
+
+12A to 12C are hardened with durable snapshot flushing, formal SQLite schema version 3, typed transaction statuses and operations, redo stack ordering by `undone_at`, redo-branch supersession, post-commit warning metadata, explicit incomplete-transaction disposition, broader terminal-state retention, and failure-injection/branching-history coverage. The delivery labels are now: 12A Recovery Journal, 12B Structural Undo/Redo, 12C Shared Write Service, 12D Git Context and Multi-file Transactions, and 12E Journal-only Staging Overlay.

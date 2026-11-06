@@ -329,3 +329,8 @@ UI windows retain presentation responsibilities such as projection reconstructio
 ### Revision 12.4 shared write service completion
 
 Revision 12C is now complete. Legacy `journaled_atomic_write`, `journaled_create_file`, and direct `atomic_write` application paths were removed, along with the obsolete disk-writing `structural.create_package_init()` helper. Recovery and I/O tests now exercise the same `SourceWriteService` used by the GUI. `RecoveryJournal.update_prepared()` provides a public journal boundary for file-creation metadata, so the write service no longer imports private recovery functions or calls private SQLite upsert methods.
+
+
+### Revision 12.5 journal hardening
+
+Revision 12.5 hardens the complete 12A to 12C source-integrity stack. Redo now follows `undone_at` stack order, new commits supersede abandoned redo branches, snapshots are explicitly flushed with `fsync()`, SQLite uses schema `user_version = 3`, and journal/undo methods are normal `RecoveryJournal` methods rather than runtime monkey patches. Source replacement failures remain `failed`, while reparse or notification failures after a successful commit retain `committed` and record `post_commit_error`. GUI save paths consistently catch authoritative `SourceConflictError` results and no longer offer stale-document overwrite. Startup recovery transactions can be finalized, aborted, or marked reviewed according to their disk hash state, and retention covers terminal states while preserving pinned and incomplete transactions.
