@@ -1,5 +1,7 @@
 # PyBrowser
 
+<img width="1297" height="925" alt="image" src="https://github.com/user-attachments/assets/e21d5f88-c3ae-42a1-865a-85d605104707" />
+
 PyBrowser is a Smalltalk-inspired structural browser and editor for Python source. It provides a four-pane view of a Python file or folder world:
 
 1. **Modules** selects a Python file.
