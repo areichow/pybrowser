@@ -555,9 +555,11 @@ class RecoveryJournal:
         return directory, dict(transaction.manifest), after_path
 
     def update_prepared(self, directory: Path, manifest: dict):
-        """Persist metadata changes made after preparation but before disk commit."""
-        _json_write(directory / "manifest.json", manifest)
+        """Persist metadata changes, then rebuild the portable mirror from SQLite."""
         self._upsert_manifest(directory, manifest)
+        current = self.get(manifest["transaction_id"])
+        _json_write(directory / "manifest.json", current.manifest)
+        manifest.clear(); manifest.update(current.manifest)
 
     def finalize(self, directory: Path, manifest: dict, after_path: Path, after: bytes):
         """Persist the core commit. Housekeeping failures become warnings."""

@@ -1618,7 +1618,11 @@ class MainWindow(QMainWindow):
         visible = self._visible()
         row = next((index for index, member in enumerate(visible) if label and member.label == label), -1)
         if row < 0 and label:
-            row = next((index for index, member in enumerate(visible) if member.label.startswith(label)), -1)
+            matching_rows = [index for index, member in enumerate(visible) if member.label.startswith(label)] if label else []
+        if fallback_row is not None and 0 <= fallback_row < len(visible) and fallback_row in matching_rows:
+            row = fallback_row
+        else:
+            row = matching_rows[0] if matching_rows else -1
         if row < 0 and fallback_row is not None and visible:
             row = min(max(0, fallback_row), len(visible) - 1)
         if row < 0 and visible:

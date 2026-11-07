@@ -164,3 +164,10 @@ def test_file_watcher_reload_preserves_duplicate_row_fallback():
     method = source[source.index("    def _file_changed"):source.index("    def _start_background_index", source.index("    def _file_changed"))]
     assert "fallback_row=self.members.currentRow()" in method
     assert "def _select_member_occurrence" in source
+
+
+def test_duplicate_label_restore_prefers_matching_fallback_row():
+    source = Path("pybrowser/main_window.py").read_text()
+    method = source[source.index("    def _select_location"):source.index("    def _select_structural_result", source.index("    def _select_location"))]
+    assert "fallback_row in matching_rows" in method
+    assert "row = fallback_row" in method

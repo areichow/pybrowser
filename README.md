@@ -375,3 +375,8 @@ Duplicate Member now resolves the requested callable occurrence after reload and
 #### Revision 12.12 watcher-stable duplicate occurrence selection
 
 Duplicate Member selection is now applied through one signal-blocked occurrence-selection helper that updates the list row, Member model, projection, and editor together. QFileSystemWatcher reloads preserve the current Member row as a fallback, so an ambiguous duplicate label cannot reset the Browser to the first occurrence after the write completes.
+
+
+##### Revision 12.13 stable duplicate identity and final authority cleanup
+
+Browser restoration now treats source-order row as part of Member identity when labels are duplicated. If the saved fallback row is one of the matching labels, that exact row wins over the first textual match. This applies to structural reloads, file watcher callbacks, and delayed directory refresh bookmarks. RecoveryJournal.update_prepared() is also SQLite-first and rewrites manifest.json from the authoritative row.

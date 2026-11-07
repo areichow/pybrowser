@@ -29,6 +29,9 @@ def test_duplicate_then_rename_changes_only_inserted_method(tmp_path, app):
     assert path.read_text().count('def run(self):') == 2
     assert window.members.currentRow() == window.members.count() - 1
     assert window.member.span.start == path.read_text().rindex('    def run(self):')
+    window._refresh_world(); app.processEvents()
+    assert window.members.currentRow() == window.members.count() - 1
+    assert window.member.span.start == path.read_text().rindex('    def run(self):')
     window._file_changed(str(path)); app.processEvents()
     assert window.members.currentRow() == window.members.count() - 1
     assert window.member.span.start == path.read_text().rindex('    def run(self):')

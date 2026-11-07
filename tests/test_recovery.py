@@ -471,3 +471,14 @@ def test_history_transient_state_requires_after_snapshot(tmp_path):
     journal.snapshot_path(claimed,'after').unlink()
     reopened=RecoveryJournal(world,history)
     assert reopened.get(tx.transaction_id).damaged
+
+
+def test_update_prepared_rebuilds_json_from_sqlite(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); path=world/'new.py'
+    journal=RecoveryJournal(world,tmp_path/'history')
+    directory,manifest,_after=journal.record_write(path,b'',b'A = 1\n')
+    manifest['files'][0]['before_exists']=False
+    journal.update_prepared(directory,manifest)
+    mirror=json.loads((directory/'manifest.json').read_text())
+    assert mirror['files'][0]['before_exists'] is False
+    assert journal.get(manifest['transaction_id']).files[0]['before_exists'] is False
