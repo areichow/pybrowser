@@ -171,3 +171,16 @@ def test_duplicate_label_restore_prefers_matching_fallback_row():
     method = source[source.index("    def _select_location"):source.index("    def _select_structural_result", source.index("    def _select_location"))]
     assert "fallback_row in matching_rows" in method
     assert "row = fallback_row" in method
+
+def test_duplicate_restore_matching_rows_is_always_initialized():
+    source = Path("pybrowser/main_window.py").read_text()
+    method = source[source.index("    def _select_location"):source.index("    def _select_structural_result", source.index("    def _select_location"))]
+    assert "matching_rows = []" in method
+    assert "fallback_row in matching_rows" in method
+    assert method.index("matching_rows = []") < method.index("fallback_row in matching_rows")
+
+
+def test_index_worker_does_not_swallow_base_exception():
+    source = Path("pybrowser/indexing.py").read_text()
+    assert "except BaseException" not in source
+    assert "except Exception as exc" in source

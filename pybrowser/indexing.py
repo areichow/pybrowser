@@ -62,7 +62,7 @@ class IndexWorldTask(QRunnable):
                 path = futures[future]
                 try:
                     result_path, scopes, semantic, error = future.result()
-                except BaseException as exc:
+                except Exception as exc:
                     result_path, scopes, semantic, error = path, None, None, str(exc)
                 batch.append(ModuleIndexResult(Path(result_path), self.generation, scopes, semantic, error))
                 completed += 1

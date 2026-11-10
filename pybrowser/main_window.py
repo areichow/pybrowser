@@ -1616,9 +1616,11 @@ class MainWindow(QMainWindow):
         selected_category = categories[category_index] if category_index >= 0 else ""
         self._populate_members(selected_category)
         visible = self._visible()
-        row = next((index for index, member in enumerate(visible) if label and member.label == label), -1)
-        if row < 0 and label:
-            matching_rows = [index for index, member in enumerate(visible) if member.label.startswith(label)] if label else []
+        matching_rows = []
+        if label:
+            matching_rows = [index for index, member in enumerate(visible) if member.label == label]
+            if not matching_rows:
+                matching_rows = [index for index, member in enumerate(visible) if member.label.startswith(label)]
         if fallback_row is not None and 0 <= fallback_row < len(visible) and fallback_row in matching_rows:
             row = fallback_row
         else:

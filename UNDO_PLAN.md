@@ -214,3 +214,7 @@ Interrupted undoing and redoing claims now have restart dispositions based on be
 #### Revision 12.10 final 12A-12C freeze
 
 Document loads and saves now use stable byte images, cooperative path locks, and a final pre-replacement signature check. Established transaction transitions are SQLite-first, portable mirrors are rebuilt from authoritative rows, transient history damage requires complete snapshots, and recovery controls identify interrupted save, undo, and redo actions explicitly.
+
+#### Revision 12.14 deterministic GUI testing and duplicate restoration
+
+The focused Duplicate Member GUI regression disables unrelated process-pool indexing and filesystem watchers, converts unexpected modal dialogs into immediate test failures, and tears down Qt windows explicitly. Duplicate-label restoration initializes the complete matching-row set before selecting a valid source-order fallback. Indexing workers no longer catch BaseException.
