@@ -172,7 +172,7 @@ A Member edit is reconstructed into the original module. The entire candidate mo
 
 **File > Auto-Commit Enabled** is checked by default and preserves immediate write-through behavior. Clear the checkbox to use Manual Commit mode. In Manual Commit mode, Ctrl+S and structural operations durably stage complete validated source snapshots in the recovery journal while physical files remain unchanged. Staged source is restored after restart and is visible to Browsers, File View, queries, search, references, and native indexing.
 
-Use **File > Commit Changes to Disk** to atomically validate physical baselines and write every active staged file. Use **View Staged Changes** to open Structural History, or **Abandon Staged Changes** to retain recovery history while restoring the visible World to physical disk. Quit and World switching offer Commit Changes, Abandon Changes, View Changes, and Cancel. Type checking is deliberately disabled while staged changes exist until overlay mirror materialization is implemented.
+Use **File > Commit Changes to Disk** to atomically validate physical baselines and write every active staged file. **View Staged Changes** opens a dedicated modeless review window with per-file disk-to-staged diffs, existing-versus-virtual status, external-conflict detection, Commit Selected, Abandon Selected, Open Staged Source, Commit All, and Abandon All. **Abandon Staged Changes** retains recovery history while restoring the visible World to physical disk. Quit and World switching offer Commit Changes, Abandon Changes, View Changes, and Cancel. Type checking is deliberately disabled while staged changes exist until overlay mirror materialization is implemented.
 
 ### Git remains explicit
 
@@ -189,7 +189,7 @@ When disk state does not match the expected hash, PyBrowser refuses automatic re
 - Categories only exist when a Member supplies metadata or qualifies for an inferred category.
 - Structural undo and redo currently operate on transactions whose file states match exact hashes.
 - Multi-file disk transactions now validate and lock all candidates before replacement and roll back earlier replacements after a later failure. Explicit per-file crash progress and complete-forward recovery remain planned.
-- Durable single-file staging and atomic Commit All are implemented. Selective commit, staged deletion, and type-check mirror materialization remain planned.
+- Durable staging, atomic Commit All, and per-file Commit Selected are implemented. Staged deletion, rename/move, and type-check mirror materialization remain planned.
 - PySide6 GUI tests require a Qt-capable environment. The offscreen platform is recommended for CI.
 - Shared path locks coordinate PyBrowser saves, creation, undo, and redo, but cannot prevent an unrelated program from modifying a file at the exact instant of replacement. A final stable signature check reduces this window.
 

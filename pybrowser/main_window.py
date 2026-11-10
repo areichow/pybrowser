@@ -41,6 +41,7 @@ from .diagnostic_aggregation import DiagnosticAggregation, decorate
 from .member_projection import MemberProjection, file_to_editor_offset, project_member, restore_member
 from .source_write_service import SaveRequest, SourceConflictError, SourcePostCommitError, WriteMode
 from .widgets.structural_history import StructuralHistoryWindow
+from .widgets.staged_changes import StagedChangesWindow
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
 from PySide6.QtWidgets import QTextEdit
@@ -246,7 +247,7 @@ class MainWindow(QMainWindow):
         commit_staged_action = QAction("Commit Changes to Disk", self)
         commit_staged_action.triggered.connect(self.commit_staged_changes)
         view_staged_action = QAction("View Staged Changes", self)
-        view_staged_action.triggered.connect(self.show_structural_history)
+        view_staged_action.triggered.connect(self.show_staged_changes)
         abandon_staged_action = QAction("Abandon Staged Changes...", self)
         abandon_staged_action.triggered.connect(self.abandon_staged_changes)
         find_action = QAction("Find", self)
@@ -439,7 +440,7 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() is commit: return self.commit_staged_changes()
         if box.clickedButton() is abandon: return self.abandon_staged_changes(confirm=True)
-        if box.clickedButton() is view: self.show_structural_history(); return False
+        if box.clickedButton() is view: self.show_staged_changes(); return False
         return False
 
     def run_type_check(self):
@@ -1971,6 +1972,17 @@ class MainWindow(QMainWindow):
         if value.startswith("added class"): return "add_class"
         if value.startswith("added"): return "add_method"
         return "structural_edit"
+
+    def show_staged_changes(self):
+        if not self.workspace.journal:
+            QMessageBox.information(self, "Staged Changes", "Open a World before viewing staged changes.")
+            return
+        existing = next((window for window in self.child_windows
+                         if isinstance(window, StagedChangesWindow) and window.isVisible()), None)
+        if existing is not None:
+            existing.refresh(); existing.raise_(); existing.activateWindow(); return
+        window = StagedChangesWindow(self.workspace)
+        window.show(); self.child_windows.append(window)
 
     def show_structural_history(self):
         if not self.workspace.journal:

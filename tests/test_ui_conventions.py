@@ -231,3 +231,23 @@ def test_gui_regression_isolates_manual_commit_setting_and_modal_exec():
     source = Path("tests/test_structural_gui.py").read_text(encoding="utf-8")
     assert 'settings.setValue("source/writeMode", WriteMode.AUTO_COMMIT.value)' in source
     assert 'monkeypatch.setattr(QMessageBox, "exec", unexpected)' in source
+
+
+def test_view_staged_changes_opens_dedicated_window():
+    main = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    staged = Path("pybrowser/widgets/staged_changes.py").read_text(encoding="utf-8")
+    assert "view_staged_action.triggered.connect(self.show_staged_changes)" in main
+    assert "class StagedChangesWindow" in staged
+    for label in ("Commit Selected", "Abandon Selected...", "Open Staged Source",
+                  "Commit All", "Abandon All...", "Refresh"):
+        assert label in staged
+    assert "Physical file differs from the staged baseline" in staged
+    assert "Virtual target is still absent from disk" in staged
+
+
+def test_quit_view_changes_uses_staged_changes_window():
+    source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    method = source[source.index("    def _staged_exit_disposition"):source.index(
+        "    def run_type_check", source.index("    def _staged_exit_disposition"))]
+    assert "self.show_staged_changes()" in method
+    assert "self.show_structural_history()" not in method

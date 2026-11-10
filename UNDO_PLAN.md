@@ -258,3 +258,8 @@ Schema 6 adds authoritative `active_overlays` rows that point to complete staged
 ###### Revision 12.21.1 Manual Commit notification and GUI-test hardening
 
 Overlay publication no longer emits an origin-less synchronous reload while `SourceWriteService` is still completing a save. The service publishes or removes the overlay silently, then sends one origin-aware Workspace notification. Workspace source notifications also publish the current effective World so virtual modules appear and disappear in Browser trees without a physical directory event. Physical directory refresh updates the Workspace disk baseline before merging overlays. GUI tests now isolate the global `source/writeMode` setting, fail immediately on instance `QMessageBox.exec()`, and clean up without invoking staged-change lifecycle prompts.
+
+
+##### Revision 12.22 dedicated Staged Changes review
+
+`File > View Staged Changes` now opens a modeless Staged Changes window instead of the general Structural History window. It lists one active overlay per path, distinguishes existing files from virtual new files, rechecks physical baselines on refresh, highlights external conflicts, and shows a unified disk-to-staged snapshot diff with transaction metadata. Actions include Commit Selected, Abandon Selected, Open Staged Source, Commit All, Abandon All, and Refresh. Commit Selected is disabled when the selected physical baseline conflicts, while abandon and inspection remain available. Quit and World-switch `View Changes` now open this dedicated window and cancel the pending lifecycle action.
