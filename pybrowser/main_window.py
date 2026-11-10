@@ -664,7 +664,6 @@ class MainWindow(QMainWindow):
         self.search_index = -1
         self.search_source = ""
         self.replace_dialog = None
-        self.member_projection = MemberProjection("", "", False, "No Member selected")
         self._update_match_indicator()
 
     def _search_scope_changed(self):
@@ -688,7 +687,6 @@ class MainWindow(QMainWindow):
             self.search_matches = ()
             self.search_source = ""
         self.replace_dialog = None
-        self.member_projection = MemberProjection("", "", False, "No Member selected")
         self.search_index = 0 if self.search_matches else -1
         self._show_search_match()
 

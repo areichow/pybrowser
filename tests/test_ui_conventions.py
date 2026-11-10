@@ -377,3 +377,13 @@ def test_save_profiles_fast_path_acceptance_or_rejection_reason():
     assert '"save_structure_path"' in save
     assert 'mode="rebased" if prepared_scopes is not None else "full_reparse"' in save
     assert "with_reason=True" in save
+
+
+def test_search_state_reset_does_not_destroy_active_member_projection():
+    source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    reset = source[source.index("    def _search_text_changed"):source.index(
+        "    def _search_scope_changed", source.index("    def _search_text_changed"))]
+    execute = source[source.index("    def execute_find"):source.index(
+        "    def find_next", source.index("    def execute_find"))]
+    assert "member_projection = MemberProjection" not in reset
+    assert "member_projection = MemberProjection" not in execute

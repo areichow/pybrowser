@@ -152,6 +152,9 @@ def test_repeated_member_saves_keep_following_member_boundary(
             window.editor.document().setModified(True)
             window.save(); app.processEvents()
             assert not window.editor.document().isModified()
+            assert window.member_projection.projected
+            assert window.member_projection.prefix == "    "
+            assert window.editor.toPlainText().startswith("def first(self, model):")
             assert len(window.doc.scopes) >= 2
             scope = next(item for item in window.doc.scopes if item.name == "App")
             assert [item.label.split("  (", 1)[0] for item in scope.members] == ["first", "second"]

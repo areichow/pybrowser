@@ -308,3 +308,8 @@ Revision 12.24.3 exposed a correctness regression in the callable-suite fast pat
 ###### Revision 12.24.5 exact edited-Member occurrence matching
 
 The 12.24.4 Windows GUI regression exposed a second prepared-scope defect. `Member` is an immutable dataclass, and the rebasing loop used `item == member`; value equality is not a safe occurrence identity while all scopes are traversed. Rebase now identifies the edited occurrence by exact scope plus literal start/end span. The focused GUI test verifies the reversible projection prefix and explicitly clears unsaved/staged state during teardown so a primary assertion failure is not masked by expected lifecycle prompts.
+
+
+###### Revision 12.24.6 preserve Member projection across search-state reset
+
+The 12.24.5 Windows GUI failure was caused outside span rebasing. `_display_document()` correctly restored the saved Member and its four-space reversible projection, then called `_search_text_changed()`. That search-state helper incorrectly replaced `member_projection` with an empty, non-projected record. The next save therefore reconstructed the class method at column zero. Search reset and search execution no longer mutate Member projection state. Projection ownership remains exclusively in Member load and clear paths. The repeated-save GUI regression now asserts the four-space projection after every save.
