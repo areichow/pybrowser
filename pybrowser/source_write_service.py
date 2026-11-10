@@ -276,6 +276,7 @@ class SourceWriteService:
                     path, after, encoding=request.document.encoding, mode=mode,
                     disk_signature=baseline, expected_visible_signature=store_visible,
                     transaction_id=transaction.transaction_id, already_locked=True,
+                    notify=False,
                 )
         except PathLockError as exc:
             raise SourceConflictError(str(exc)) from exc
@@ -306,7 +307,7 @@ class SourceWriteService:
                     try: self._create_bytes_exclusive(path, overlay.data, overlay.mode)
                     except FileExistsError as exc: raise SourceConflictError(f"{path} now exists. The staged change was retained.") from exc
                 transaction = self.journal.complete_staged_commit(transaction)
-                self.source_store.discard(path)
+                self.source_store.discard(path, notify=False)
         except PathLockError as exc:
             raise SourceConflictError(str(exc)) from exc
         refreshed = self._read_document(path)
@@ -355,7 +356,7 @@ class SourceWriteService:
                         except OSError: pass
                     raise
                 for path, _overlay, _transaction, _exists in entries:
-                    self.source_store.discard(path)
+                    self.source_store.discard(path, notify=False)
         except PathLockError as exc:
             raise SourceConflictError(str(exc)) from exc
         results = []
@@ -370,7 +371,7 @@ class SourceWriteService:
         try:
             with self.locks.acquire(path):
                 transaction = self.journal.discard_staged(path)
-                if self.source_store: self.source_store.discard(path)
+                if self.source_store: self.source_store.discard(path, notify=False)
         except PathLockError as exc:
             raise SourceConflictError(str(exc)) from exc
         if self.notify: self.notify(path, origin)

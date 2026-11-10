@@ -217,3 +217,17 @@ def test_typecheck_refuses_stale_disk_when_overlay_exists():
     method = source[source.index("    def run_type_check"):source.index("    def _typecheck_finished", source.index("    def run_type_check"))]
     assert "self.workspace.staged_paths()" in method
     assert "Type checking is unavailable" in method
+
+
+def test_manual_stage_publication_does_not_reload_origin_mid_save():
+    service = Path("pybrowser/source_write_service.py").read_text(encoding="utf-8")
+    workspace = Path("pybrowser/workspace.py").read_text(encoding="utf-8")
+    assert "notify=False" in service
+    assert "self.notify(path, request.origin)" in service
+    assert "self.world_changed.emit(self.effective_world())" in workspace
+
+
+def test_gui_regression_isolates_manual_commit_setting_and_modal_exec():
+    source = Path("tests/test_structural_gui.py").read_text(encoding="utf-8")
+    assert 'settings.setValue("source/writeMode", WriteMode.AUTO_COMMIT.value)' in source
+    assert 'monkeypatch.setattr(QMessageBox, "exec", unexpected)' in source

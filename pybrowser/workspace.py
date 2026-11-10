@@ -66,7 +66,7 @@ class Workspace(QObject):
             self.source_store.stage_bytes(
                 path, data, encoding=item.get("encoding") or "utf-8",
                 mode=item.get("mode") or 0o644, disk_signature=disk_signature,
-                transaction_id=transaction.transaction_id, restoring=True,
+                transaction_id=transaction.transaction_id, restoring=True, notify=False,
             )
 
     def _overlay_changed(self, path):
@@ -100,7 +100,10 @@ class Workspace(QObject):
         return self.source_store.read_document(path)
 
     def announce_file_changed(self, path: Path, origin=None):
-        self.file_changed.emit(Path(path).resolve(), origin)
+        path = Path(path).resolve()
+        self.file_changed.emit(path, origin)
+        if path.suffix.casefold() == ".py":
+            self.world_changed.emit(self.effective_world())
 
     def register(self, window, kind="window"):
         if window in self.windows:

@@ -122,7 +122,8 @@ Qt object lifetime is a high-risk area on Windows.
 - Use `shiboken6.isValid()` before touching Qt objects from callbacks that can outlive their owner.
 - Suppress nonessential window-registry emissions while `QCoreApplication.closingDown()` is true.
 - Tests must explicitly unregister, close, schedule deletion, and process posted events.
-- Modal dialogs in GUI tests should be monkeypatched to fail immediately rather than hang headless pytest.
+- Modal dialogs in GUI tests should be monkeypatched to fail immediately rather than hang headless pytest. Patch both QMessageBox convenience methods and instance `exec()`.
+- GUI tests must explicitly set and restore the global `source/writeMode` QSettings value; a developer Manual Commit preference must not change test semantics.
 
 ## UI priorities
 

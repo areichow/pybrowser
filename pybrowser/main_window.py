@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
         self.workspace = workspace or Workspace()
         self.workspace.register(self, "browser")
         self.workspace.file_changed.connect(self._workspace_file_changed)
+        self.workspace.world_changed.connect(self._workspace_world_changed)
         self.world: World | None = self.workspace.world
         self.child_windows = []
         self.module_entries: dict[str, ModuleEntry] = {}
@@ -1050,12 +1051,24 @@ class MainWindow(QMainWindow):
         if self.world and not self.world.single_file:
             self.refresh_timer.start()
 
+    def _workspace_world_changed(self, world):
+        if self.opening_world or world is None:
+            return
+        bookmark = self._capture_browser_selection()
+        self.world = world
+        self.index_cache.retain({entry.path for entry in world.modules})
+        self._populate_module_tree()
+        self._start_background_index()
+        self._restore_browser_bookmark(bookmark)
+
     def _refresh_world(self):
         if not self.world or self.world.single_file:
             return
         bookmark = self._capture_browser_selection()
         try:
-            self.world = open_world(self.world.root)
+            physical_world = open_world(self.world.root)
+            self.workspace.world = physical_world
+            self.world = self.workspace.effective_world()
             self.index_cache.retain({entry.path for entry in self.world.modules})
             self._populate_module_tree()
             self._watch_world()

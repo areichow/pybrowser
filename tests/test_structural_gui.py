@@ -4,10 +4,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from pybrowser.main_window import MainWindow
 from pybrowser.workspace import Workspace
+from pybrowser.source_write_service import WriteMode
 
 
 @pytest.fixture(scope="module")
@@ -19,6 +21,20 @@ def app():
 
 
 @pytest.fixture
+def auto_commit_setting():
+    settings = QSettings("PyBrowser", "PyBrowser")
+    previous = settings.value("source/writeMode", None)
+    settings.setValue("source/writeMode", WriteMode.AUTO_COMMIT.value)
+    settings.sync()
+    yield
+    if previous is None:
+        settings.remove("source/writeMode")
+    else:
+        settings.setValue("source/writeMode", previous)
+    settings.sync()
+
+
+@pytest.fixture
 def no_modal_dialogs(monkeypatch):
     def unexpected(*args, **kwargs):
         title = args[1] if len(args) > 1 else "Qt dialog"
@@ -26,6 +42,7 @@ def no_modal_dialogs(monkeypatch):
         pytest.fail(f"Unexpected modal dialog: {title}: {text}")
     for name in ("critical", "warning", "information", "question"):
         monkeypatch.setattr(QMessageBox, name, unexpected)
+    monkeypatch.setattr(QMessageBox, "exec", unexpected)
 
 
 def _select_member(window, scope_name, member_name):
@@ -37,7 +54,7 @@ def _select_member(window, scope_name, member_name):
     window.members.setCurrentRow(member_row)
 
 
-def test_duplicate_then_rename_changes_only_inserted_method(tmp_path, app, monkeypatch, no_modal_dialogs):
+def test_duplicate_then_rename_changes_only_inserted_method(tmp_path, app, monkeypatch, no_modal_dialogs, auto_commit_setting):
     # This is a focused GUI behavior test. Process-pool indexing is unrelated and
     # can keep spawned Windows workers alive after the Qt window is gone.
     monkeypatch.setattr(MainWindow, "_start_background_index", lambda self: None)
@@ -49,6 +66,7 @@ def test_duplicate_then_rename_changes_only_inserted_method(tmp_path, app, monke
     workspace = Workspace()
     window = MainWindow(workspace=workspace)
     try:
+        assert window.auto_commit_action.isChecked()
         window.open(path)
         app.processEvents()
         _select_member(window, "App", "run")
