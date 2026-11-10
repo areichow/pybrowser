@@ -6,7 +6,7 @@ from PySide6.QtCore import QObject, QCoreApplication, QSettings, Signal
 from PySide6.QtWidgets import QApplication
 
 from .recovery import RecoveryConflictError, RecoveryJournal
-from .source_write_service import SourceWriteService
+from .source_write_service import SourceWriteService, WriteMode
 from .world_source import WorldSourceStore
 from .project import World
 
@@ -45,12 +45,48 @@ class Workspace(QObject):
             max_megabytes=settings.value("recovery/maxMegabytes", 500, int),
         )
         self.journal.on_change = self.history_changed.emit
-        self.source_store = WorldSourceStore(world.root, self.journal.locks)
+        self.source_store = WorldSourceStore(world.root, self.journal.locks, self._overlay_changed)
+        self._restore_active_overlays()
         self.write_service = SourceWriteService(
-            self.journal, self.announce_file_changed, source_store=self.source_store
+            self.journal, self.announce_file_changed, source_store=self.source_store,
+            write_mode=settings.value("source/writeMode", WriteMode.AUTO_COMMIT.value, str),
         )
         self.world_changed.emit(world)
         self.history_changed.emit()
+
+    def _restore_active_overlays(self):
+        for path, transaction, disk_signature in self.journal.active_overlays():
+            item = transaction.files[0]
+            after = self.journal.snapshot_path(transaction, "after")
+            if transaction.damaged or not after.exists():
+                continue
+            data = after.read_bytes()
+            if __import__("hashlib").sha256(data).hexdigest() != item.get("after_sha256"):
+                continue
+            self.source_store.stage_bytes(
+                path, data, encoding=item.get("encoding") or "utf-8",
+                mode=item.get("mode") or 0o644, disk_signature=disk_signature,
+                transaction_id=transaction.transaction_id, restoring=True,
+            )
+
+    def _overlay_changed(self, path):
+        self.file_changed.emit(Path(path).resolve(), None)
+        self.world_changed.emit(self.effective_world())
+
+    def staged_paths(self):
+        return self.source_store.staged_paths() if self.source_store else ()
+
+    def set_write_mode(self, mode):
+        mode = WriteMode(mode)
+        QSettings("PyBrowser", "PyBrowser").setValue("source/writeMode", mode.value)
+        if self.write_service:
+            self.write_service.write_mode = mode
+
+    def commit_all_staged(self, origin=None):
+        return self.write_service.commit_all_staged(origin) if self.write_service else ()
+
+    def discard_all_staged(self, origin=None):
+        return self.write_service.discard_all_staged(origin) if self.write_service else ()
 
     def effective_world(self):
         if self.world is None or self.source_store is None:

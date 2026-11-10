@@ -39,7 +39,7 @@ from .semantic import analyze_source
 from .semantic_queries import references_in_world
 from .diagnostic_aggregation import DiagnosticAggregation, decorate
 from .member_projection import MemberProjection, file_to_editor_offset, project_member, restore_member
-from .source_write_service import SaveRequest, SourceConflictError, SourcePostCommitError
+from .source_write_service import SaveRequest, SourceConflictError, SourcePostCommitError, WriteMode
 from .widgets.structural_history import StructuralHistoryWindow
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
@@ -238,6 +238,16 @@ class MainWindow(QMainWindow):
         save_action = QAction("Save Member", self)
         save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self.save)
+        self.auto_commit_action = QAction("Auto-Commit Enabled", self)
+        self.auto_commit_action.setCheckable(True)
+        self.auto_commit_action.setChecked(self.settings.value("source/writeMode", WriteMode.AUTO_COMMIT.value, str) == WriteMode.AUTO_COMMIT.value)
+        self.auto_commit_action.toggled.connect(self._toggle_auto_commit)
+        commit_staged_action = QAction("Commit Changes to Disk", self)
+        commit_staged_action.triggered.connect(self.commit_staged_changes)
+        view_staged_action = QAction("View Staged Changes", self)
+        view_staged_action.triggered.connect(self.show_structural_history)
+        abandon_staged_action = QAction("Abandon Staged Changes...", self)
+        abandon_staged_action.triggered.connect(self.abandon_staged_changes)
         find_action = QAction("Find", self)
         find_action.setShortcut(QKeySequence.StandardKey.Find)
         find_action.triggered.connect(self.focus_find)
@@ -293,6 +303,12 @@ class MainWindow(QMainWindow):
         focus_crumb_action.setShortcut("Ctrl+Alt+L")
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addActions([open_action, folder_action, save_action])
+        file_menu.addSeparator()
+        file_menu.addAction(self.auto_commit_action)
+        file_menu.addAction(commit_staged_action)
+        file_menu.addAction(view_staged_action)
+        file_menu.addAction(abandon_staged_action)
+        file_menu.addSeparator()
         history_action = QAction("Structural History...", self)
         history_action.setShortcut("Ctrl+Shift+H")
         history_action.triggered.connect(self.show_structural_history)
@@ -361,6 +377,70 @@ class MainWindow(QMainWindow):
             self.settings.setValue("typecheck/executable", values["executable"])
             self.settings.setValue("typecheck/pythonPath", values["python_path"])
 
+    def _toggle_auto_commit(self, enabled):
+        if not self.workspace.write_service:
+            self.settings.setValue("source/writeMode", WriteMode.AUTO_COMMIT.value if enabled else WriteMode.MANUAL_COMMIT.value)
+            return
+        if enabled and self.workspace.staged_paths():
+            box = QMessageBox(self)
+            box.setWindowTitle("Enable Auto-Commit")
+            box.setText("This World has staged changes. Commit or abandon them before enabling Auto-Commit.")
+            commit = box.addButton("Commit Changes and Enable Auto-Commit", QMessageBox.ButtonRole.AcceptRole)
+            abandon = box.addButton("Abandon Changes and Enable Auto-Commit", QMessageBox.ButtonRole.DestructiveRole)
+            cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+            box.exec()
+            if box.clickedButton() is commit:
+                if not self.commit_staged_changes():
+                    self.auto_commit_action.blockSignals(True); self.auto_commit_action.setChecked(False); self.auto_commit_action.blockSignals(False); return
+            elif box.clickedButton() is abandon:
+                if not self.abandon_staged_changes(confirm=True):
+                    self.auto_commit_action.blockSignals(True); self.auto_commit_action.setChecked(False); self.auto_commit_action.blockSignals(False); return
+            else:
+                self.auto_commit_action.blockSignals(True); self.auto_commit_action.setChecked(False); self.auto_commit_action.blockSignals(False); return
+        self.workspace.set_write_mode(WriteMode.AUTO_COMMIT if enabled else WriteMode.MANUAL_COMMIT)
+        self.statusBar().showMessage("Auto-Commit enabled" if enabled else "Manual Commit enabled: Ctrl+S stages changes", 6000)
+
+    def commit_staged_changes(self):
+        paths = self.workspace.staged_paths()
+        if not paths:
+            self.statusBar().showMessage("No staged changes", 4000); return True
+        try:
+            self.workspace.commit_all_staged(self)
+            self.statusBar().showMessage(f"Committed {len(paths)} staged file(s) to disk", 6000)
+            return True
+        except (SourceConflictError, OSError) as exc:
+            QMessageBox.warning(self, "Commit Changes Refused", str(exc))
+            return False
+
+    def abandon_staged_changes(self, confirm=True):
+        paths = self.workspace.staged_paths()
+        if not paths:
+            self.statusBar().showMessage("No staged changes", 4000); return True
+        if confirm:
+            answer = QMessageBox.question(self, "Abandon Staged Changes?",
+                f"Permanently abandon {len(paths)} staged file change(s)? Physical source files will remain unchanged.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes: return False
+        self.workspace.discard_all_staged(self)
+        self.statusBar().showMessage(f"Abandoned {len(paths)} staged file change(s)", 6000)
+        return True
+
+    def _staged_exit_disposition(self):
+        paths = self.workspace.staged_paths()
+        if not paths: return True
+        box = QMessageBox(self)
+        box.setWindowTitle("Staged Changes")
+        box.setText(f"This World has {len(paths)} staged file change(s) that have not been written to disk.")
+        commit = box.addButton("Commit Changes", QMessageBox.ButtonRole.AcceptRole)
+        abandon = box.addButton("Abandon Changes", QMessageBox.ButtonRole.DestructiveRole)
+        view = box.addButton("View Changes", QMessageBox.ButtonRole.ActionRole)
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is commit: return self.commit_staged_changes()
+        if box.clickedButton() is abandon: return self.abandon_staged_changes(confirm=True)
+        if box.clickedButton() is view: self.show_structural_history(); return False
+        return False
+
     def run_type_check(self):
         if self.typecheck_running:
             self.statusBar().showMessage("Type checking is already running", 3000)
@@ -370,6 +450,9 @@ class MainWindow(QMainWindow):
             return
         if self.editor.document().isModified():
             QMessageBox.information(self, "Type Check", "Save or abandon the current Member changes before type checking.")
+            return
+        if self.workspace.staged_paths():
+            QMessageBox.information(self, "Type Check", "Type checking is unavailable while Manual Commit changes are staged. Commit or abandon the staged changes first.")
             return
         values = self._typecheck_preferences()
         target = self.world.modules[0].path if self.world.single_file else self.world.root
@@ -777,6 +860,8 @@ class MainWindow(QMainWindow):
 
     def open_world_path(self, path, restore=None):
         if self.opening_world:
+            return
+        if self.world is not None and self.workspace.staged_paths() and not self._staged_exit_disposition():
             return
         self.opening_world = True
         # Invalidate old results before changing any tree/model objects. This is
@@ -1745,7 +1830,7 @@ class MainWindow(QMainWindow):
             )
             self._refresh_world()
             self._select_module_path(created)
-            self.statusBar().showMessage(f"Created {created}", 5000)
+            self.statusBar().showMessage(f"Staged {created}" if self.workspace.source_store.has_overlay(created) else f"Created {created}", 5000)
         except (OSError, StructuralEditError) as exc:
             QMessageBox.critical(self, "Cannot create __init__.py", str(exc))
 
@@ -1776,7 +1861,7 @@ class MainWindow(QMainWindow):
                 cursor.setPosition(min(bookmark["cursor"], len(self.editor.toPlainText())))
                 self.editor.setTextCursor(cursor)
             self._update_modified_indicator(False)
-            self.statusBar().showMessage("Saved", 5000)
+            self.statusBar().showMessage("Staged in Manual Commit mode" if self.workspace.staged_paths() else "Saved to disk", 5000)
             if result.warnings:
                 QMessageBox.warning(self, "Committed with warning", "\n".join(result.warnings))
         except ParseError as exc:
@@ -1895,6 +1980,8 @@ class MainWindow(QMainWindow):
         if answer == QMessageBox.StandardButton.Yes: self.show_structural_history()
 
     def closeEvent(self, event):
+        if self.workspace.browser_count() <= 1 and not self._staged_exit_disposition():
+            event.ignore(); return
         if self._confirm_discard():
             self.index_cancelled.set()
             self.settings.setValue("window/geometry", self.saveGeometry())

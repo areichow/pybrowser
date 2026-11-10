@@ -60,7 +60,8 @@ class StructuralHistoryWindow(QMainWindow):
         for row, tx in enumerate(self.transactions):
             pin = "PIN " if tx.pinned else ""
             damaged = " / damaged" if tx.damaged else ""
-            self.list.addItem(f"{pin}{tx.timestamp[:19]}  [{tx.status}{damaged}]  {tx.description}")
+            storage = " / staged" if not tx.manifest.get("committed_to_disk", True) and tx.status == "committed" else ""
+            self.list.addItem(f"{pin}{tx.timestamp[:19]}  [{tx.status}{storage}{damaged}]  {tx.description}")
             if tx.transaction_id == selected_id:
                 selected_row = row
         if self.transactions:
@@ -79,7 +80,7 @@ class StructuralHistoryWindow(QMainWindow):
         files = tx.manifest.get("files", [])
         states = self.journal.inspect_state(tx)
         lines = [tx.description, f"Operation: {tx.operation}",
-                 f"Status: {tx.status}", f"Transaction: {tx.transaction_id}", ""]
+                 f"Status: {tx.status}", f"Storage: {"disk" if tx.manifest.get("committed_to_disk", True) else "staged overlay"}", f"Transaction: {tx.transaction_id}", ""]
         if tx.post_commit_error:
             lines.extend(["Committed with warning:", tx.post_commit_error, ""])
         for (path, state), item in zip(states, files):
@@ -88,7 +89,7 @@ class StructuralHistoryWindow(QMainWindow):
                           f"After:  {item.get('after_sha256')}", ""])
         self.detail.setText("\n".join(lines))
         self.pin.setText("Unpin" if tx.pinned else "Pin")
-        self.undo_button.setEnabled(tx.status in {"committed", "redone"} and not tx.damaged)
+        self.undo_button.setEnabled(tx.status in {"committed", "redone"} and tx.manifest.get("committed_to_disk", True) and not tx.damaged)
         self.redo_button.setEnabled(tx.status == "undone" and not tx.damaged)
         state_values = {state for _path, state in states}
         incomplete = tx.status in {"prepared", "committing", "undoing", "redoing"}

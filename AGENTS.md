@@ -14,7 +14,7 @@ The user values:
 - Conservative source safety
 - Visible, actionable diagnostics
 - Explicit Git operations
-- Immediate writes with durable recovery today
+- Auto-Commit writes immediately; Manual Commit durably stages through the World overlay
 - A future Smalltalk-style staged image workflow built correctly through a World overlay
 
 Use **Member** as the generic UI term. A Member can be a function, method, property, assignment, import block, documentation block, or executable statement.

@@ -21,7 +21,7 @@ except ImportError:
     QStandardPaths = None
 
 FORMAT_VERSION = 3
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 class RecoverySchemaError(RuntimeError):
     pass
@@ -249,6 +249,8 @@ class RecoveryJournal:
                         self._migrate_3_to_4(db)
                     elif version == 4:
                         self._migrate_4_to_5(db)
+                    elif version == 5:
+                        self._migrate_5_to_6(db)
                     version += 1
                     db.execute(f"PRAGMA user_version = {version}")
             self._create_indexes(db)
@@ -274,6 +276,15 @@ class RecoveryJournal:
                 original_status TEXT NOT NULL,
                 claimed_at TEXT NOT NULL,
                 FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE
+            );
+            CREATE TABLE active_overlays (
+                absolute_path TEXT PRIMARY KEY,
+                transaction_id TEXT NOT NULL,
+                disk_mtime_ns INTEGER,
+                disk_size INTEGER,
+                disk_sha256 TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE RESTRICT
             );
             CREATE TABLE transaction_files (
                 transaction_id TEXT NOT NULL, file_index INTEGER NOT NULL,
@@ -324,6 +335,18 @@ class RecoveryJournal:
     @staticmethod
     def _migrate_4_to_5(db):
         db.execute("CREATE TABLE IF NOT EXISTS pending_deletions (transaction_id TEXT PRIMARY KEY, original_status TEXT NOT NULL, claimed_at TEXT NOT NULL, FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE)")
+
+    @staticmethod
+    def _migrate_5_to_6(db):
+        db.execute("""CREATE TABLE IF NOT EXISTS active_overlays (
+            absolute_path TEXT PRIMARY KEY,
+            transaction_id TEXT NOT NULL,
+            disk_mtime_ns INTEGER,
+            disk_size INTEGER,
+            disk_sha256 TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE RESTRICT
+        )""")
 
     @staticmethod
     def _manifest_json(value):
@@ -518,6 +541,101 @@ class RecoveryJournal:
         finally:
             if owns: connection.close()
 
+    def active_overlays(self):
+        with self._connect() as db:
+            rows = db.execute("SELECT * FROM active_overlays ORDER BY absolute_path").fetchall()
+            values = []
+            for row in rows:
+                tx = self._transaction_from_row(db, db.execute("SELECT * FROM transactions WHERE id = ?", (row["transaction_id"],)).fetchone())
+                if tx is not None:
+                    signature = None if row["disk_sha256"] is None else (row["disk_mtime_ns"], row["disk_size"], row["disk_sha256"])
+                    values.append((Path(row["absolute_path"]), tx, signature))
+            return tuple(values)
+
+    def record_staged_write(self, path, before, after, *, disk_signature, operation="save_file",
+                            description="Stage file", encoding="utf-8", newline="\n", mode=0o644,
+                            before_exists=True, after_exists=True, location_before=None, location_after=None):
+        path = Path(path).resolve()
+        now = datetime.now(timezone.utc)
+        txid = now.strftime("%Y%m%dT%H%M%S.%fZ") + "-" + uuid.uuid4().hex[:8]
+        directory = self.root / txid
+        relative = _safe_relative(path, self.world_root)
+        before_path = directory / "before" / relative
+        after_path = directory / "after" / relative
+        _write_durable_bytes(before_path, before)
+        _write_durable_bytes(after_path, after)
+        item = {
+            "path": str(path), "relative_path": relative.as_posix(), "encoding": encoding,
+            "newline": "CRLF" if newline == "\r\n" else "LF", "mode": mode,
+            "before_exists": bool(before_exists), "after_exists": bool(after_exists),
+            "before_sha256": sha256_bytes(before), "after_sha256": sha256_bytes(after),
+            "before_snapshot": str(Path("before") / relative), "after_snapshot": str(Path("after") / relative),
+        }
+        manifest = {
+            "format": FORMAT_VERSION, "transaction_id": txid, "timestamp": now.isoformat(),
+            "description": description, "operation": str(operation), "status": TransactionStatus.COMMITTED.value,
+            "pinned": False, "committed_to_disk": False, "world_root": str(self.world_root),
+            "writer": "PyBrowser", "damaged": False, "files": [item],
+            "location_before": location_before, "location_after": location_after,
+            "committed_at": now.isoformat(),
+        }
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            old = db.execute("SELECT transaction_id FROM active_overlays WHERE absolute_path = ?", (str(path),)).fetchone()
+            self._upsert_manifest(directory, manifest, db)
+            values = disk_signature or (None, None, None)
+            db.execute("""INSERT INTO active_overlays
+                (absolute_path, transaction_id, disk_mtime_ns, disk_size, disk_sha256, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(absolute_path) DO UPDATE SET transaction_id=excluded.transaction_id,
+                disk_mtime_ns=excluded.disk_mtime_ns, disk_size=excluded.disk_size,
+                disk_sha256=excluded.disk_sha256, updated_at=excluded.updated_at""",
+                (str(path), txid, values[0], values[1], values[2], now.isoformat()))
+            if old and old["transaction_id"] != txid:
+                db.execute("UPDATE transactions SET status = ?, superseded_at = ? WHERE id = ? AND committed_to_disk = 0",
+                           (TransactionStatus.SUPERSEDED.value, now.isoformat(), old["transaction_id"]))
+        transaction = self.get(txid)
+        _json_write(directory / "manifest.json", transaction.manifest)
+        if old:
+            old_tx = self.get(old["transaction_id"])
+            if old_tx: _json_write(old_tx.directory / "manifest.json", old_tx.manifest)
+        self.emit_change()
+        return transaction
+
+    def complete_staged_commits(self, transactions):
+        transactions = tuple(transactions)
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for transaction in transactions:
+                cursor = db.execute("DELETE FROM active_overlays WHERE transaction_id = ?", (transaction.transaction_id,))
+                if cursor.rowcount != 1:
+                    raise RecoveryConflictError("A staged change is no longer active.", transaction)
+                db.execute("UPDATE transactions SET committed_to_disk = 1 WHERE id = ?", (transaction.transaction_id,))
+        values = []
+        for transaction in transactions:
+            current = self.get(transaction.transaction_id)
+            _json_write(current.directory / "manifest.json", current.manifest)
+            values.append(current)
+        self.emit_change()
+        return tuple(values)
+
+    def complete_staged_commit(self, transaction):
+        return self.complete_staged_commits((transaction,))[0]
+
+    def discard_staged(self, path):
+        path = Path(path).resolve()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT transaction_id FROM active_overlays WHERE absolute_path = ?", (str(path),)).fetchone()
+            if row is None: return None
+            db.execute("DELETE FROM active_overlays WHERE absolute_path = ?", (str(path),))
+            db.execute("UPDATE transactions SET status = ?, superseded_at = ? WHERE id = ? AND committed_to_disk = 0",
+                       (TransactionStatus.ABORTED.value, datetime.now(timezone.utc).isoformat(), row["transaction_id"]))
+        tx = self.get(row["transaction_id"])
+        if tx: _json_write(tx.directory / "manifest.json", tx.manifest)
+        self.emit_change()
+        return tx
+
     def record_writes(self, files, *, operation="save_file", description="Save files",
                       location_before=None, location_after=None, writer=None):
         values = tuple(files)
@@ -676,7 +794,7 @@ class RecoveryJournal:
 
     def latest_undo(self):
         with self._connect() as db:
-            row = db.execute("SELECT * FROM transactions WHERE status IN (?, ?) AND damaged = 0 ORDER BY COALESCE(redone_at, committed_at, timestamp_utc) DESC LIMIT 1", (TransactionStatus.COMMITTED.value, TransactionStatus.REDONE.value)).fetchone()
+            row = db.execute("SELECT * FROM transactions WHERE status IN (?, ?) AND damaged = 0 AND committed_to_disk = 1 ORDER BY COALESCE(redone_at, committed_at, timestamp_utc) DESC LIMIT 1", (TransactionStatus.COMMITTED.value, TransactionStatus.REDONE.value)).fetchone()
             return self._transaction_from_row(db, row)
 
     def latest_redo(self):
@@ -815,7 +933,9 @@ class RecoveryJournal:
 
     def prune(self):
         all_transactions=self.transactions(); latest_undo=self.latest_undo(); latest_redo=self.latest_redo()
+        active_overlay_ids={tx.transaction_id for _path,tx,_signature in self.active_overlays()}
         protected={item.transaction_id for item in all_transactions if item.pinned or item.status in INCOMPLETE_STATES or item.status == TransactionStatus.UNDONE.value}
+        protected.update(active_overlay_ids)
         if latest_undo: protected.add(latest_undo.transaction_id)
         if latest_redo: protected.add(latest_redo.transaction_id)
         active=[item for item in all_transactions if item.status in {TransactionStatus.COMMITTED.value,TransactionStatus.REDONE.value}]

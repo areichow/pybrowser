@@ -60,9 +60,9 @@ class WorldSourceStore:
 
     def stage_bytes(self, path: Path, data: bytes, *, encoding="utf-8", mode=0o644,
                     disk_signature=None, expected_visible_signature=None,
-                    transaction_id=None) -> OverlaySource:
+                    transaction_id=None, already_locked=False, restoring=False) -> OverlaySource:
         path = self._path(path)
-        context = self.locks.acquire(path) if self.locks else _null_context(path)
+        context = _null_context(path) if already_locked or not self.locks else self.locks.acquire(path)
         with context:
             current = self._overlay.get(path)
             if current is not None:
@@ -80,7 +80,9 @@ class WorldSourceStore:
                     baseline = None
             if expected_visible_signature is not None and expected_visible_signature != current_visible:
                 raise OverlayConflictError(f"{path} changed in the staged World. Reload it before saving.")
-            if disk_signature is not None and baseline is not None and disk_signature != baseline:
+            if restoring:
+                baseline = disk_signature
+            if not restoring and disk_signature is not None and baseline is not None and disk_signature != baseline:
                 raise OverlayConflictError(f"{path} has a different physical baseline.")
             value = OverlaySource(bytes(data), encoding, int(mode), baseline, transaction_id)
             self._overlay[path] = value

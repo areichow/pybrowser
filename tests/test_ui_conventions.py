@@ -198,3 +198,22 @@ def test_diagnostic_navigation_maps_literal_member_offset_into_projection():
     assert "file_to_editor_offset" in method
     assert "self.member_projection.prefix" in method
     assert method.index("self._select_browser_member(member)") < method.index("file_to_editor_offset")
+
+
+def test_manual_commit_file_menu_and_quit_disposition_exist():
+    source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    assert 'QAction("Auto-Commit Enabled"' in source
+    assert 'QAction("Commit Changes to Disk"' in source
+    assert 'QAction("View Staged Changes"' in source
+    assert 'QAction("Abandon Staged Changes...' in source
+    assert 'box.addButton("Commit Changes"' in source
+    assert 'box.addButton("Abandon Changes"' in source
+    assert 'box.addButton("View Changes"' in source
+    assert 'QMessageBox.StandardButton.Cancel' in source
+
+
+def test_typecheck_refuses_stale_disk_when_overlay_exists():
+    source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    method = source[source.index("    def run_type_check"):source.index("    def _typecheck_finished", source.index("    def run_type_check"))]
+    assert "self.workspace.staged_paths()" in method
+    assert "Type checking is unavailable" in method

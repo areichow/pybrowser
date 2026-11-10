@@ -27,8 +27,10 @@ def stable_read(path: Path, retries=3) -> StableFileRead:
 def file_signature(path: Path) -> tuple[int, int, str]:
     return stable_read(path).signature
 
-def changed(document) -> bool:
+def changed(document, source_store=None) -> bool:
     try:
-        return file_signature(document.path) != document.signature
+        if source_store is not None:
+            return source_store.visible_signature(document.path) != document.signature
+        return file_signature(document.path) != (document.disk_signature or document.signature)
     except (FileNotFoundError, OSError):
         return True
