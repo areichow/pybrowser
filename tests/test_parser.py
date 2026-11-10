@@ -157,3 +157,24 @@ def test_three_consecutive_fast_rebases_keep_member_boundaries_exact():
         current = next(item for item in scopes if item.name == "App")
         assert document.source(current.members[0]).endswith("\n")
         assert document.source(current.members[1]).lstrip().startswith("def second")
+
+
+def test_rebase_matches_exact_scope_and_span_not_dataclass_equality():
+    from pybrowser.model import Member, Scope
+    from pybrowser.parser import rebase_member_document
+    text = "class App:\n    def first(self):\n        return 1\n\n    def second(self):\n        return 2\n"
+    scopes = build_index(Path("x.py"), text)
+    class_scope = next(scope for scope in scopes if scope.name == "App")
+    first = class_scope.members[0]
+    decoy = Member("<module>", first.category, first.label, first.kind,
+                   first.span, first.synthetic, first.tooltip)
+    document = Document(Path("x.py"), text, "utf-8", "\n", True,
+                        (0, 0, ""), (Scope("<module>", (decoy,)), class_scope))
+    restored = "    def first(self):\n        value = 2\n        return value"
+    candidate = replacement(document, first, restored)
+    rebased = rebase_member_document(document, first, restored, candidate)
+    assert rebased is not None
+    assert rebased[0].members[0].span == decoy.span
+    edited = next(scope for scope in rebased if scope.name == "App").members[0]
+    assert edited.span.end > first.span.end
+    validate(candidate, "x.py")

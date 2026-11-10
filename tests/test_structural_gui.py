@@ -141,7 +141,9 @@ def test_repeated_member_saves_keep_following_member_boundary(
         window.open(path); app.processEvents()
         workspace.set_write_mode(write_mode)
         _select_member(window, "App", "first")
-        for value in ('print("24.4 test 1")', 'print("24.4 test 1.1")', None):
+        assert window.member_projection.projected
+        assert window.member_projection.prefix == "    "
+        for value in ('print("24.5 test 1")', 'print("24.5 test 1.1")', None):
             lines = ["def first(self, model):"]
             if value:
                 lines.append("    " + value)
@@ -163,5 +165,8 @@ def test_repeated_member_saves_keep_following_member_boundary(
             assert path.read_bytes().startswith(b"class App:\n")
             assert workspace.source_store.read_document(path).text == window.doc.text
     finally:
+        window.editor.document().setModified(False)
+        if workspace.staged_paths():
+            workspace.write_service.discard_all_staged(window)
         workspace.unregister(window, emit=False)
         window.close(); window.deleteLater(); app.sendPostedEvents(); app.processEvents()

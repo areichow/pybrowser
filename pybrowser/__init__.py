@@ -1,2 +1,2 @@
 """PyBrowser package."""
-__version__ = "0.12.24.4"
+__version__ = "0.12.24.5"

@@ -321,7 +321,11 @@ def rebase_member_document(document: Document, member: Member,
         members = []
         for item in scope.members:
             span = item.span
-            if item == member:
+            # Identify the exact edited occurrence. Member is an immutable
+            # value object, so dataclass equality is not an occurrence identity.
+            if (item.scope == member.scope
+                    and item.span.start == member.span.start
+                    and item.span.end == member.span.end):
                 span = Span(span.start, span.end + char_delta,
                             span.first, new_member_last)
             elif span.start >= member.span.end:
