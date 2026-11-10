@@ -25,7 +25,7 @@ class ReferenceResult:
         return f"{owner} | {self.reference_kind} | {self.label} | line {self.line}:{self.column}"
 
 
-def references_in_world(world, semantic_modules: dict[Path, SemanticModule], name: str, kinds=None):
+def references_in_world(world, semantic_modules: dict[Path, SemanticModule], name: str, kinds=None, source_store=None):
     allowed = set(kinds or {"read", "write", "call", "import", "base", "decorator", "annotation", "delete"})
     results = []
     for entry in world.modules:
@@ -36,7 +36,7 @@ def references_in_world(world, semantic_modules: dict[Path, SemanticModule], nam
         if not matching:
             continue
         try:
-            text = read_source(entry.path)
+            text = source_store.read_text(entry.path) if source_store else read_source(entry.path)
             scopes = build_index(entry.path, text)
         except (OSError, UnicodeError, ValueError):
             continue

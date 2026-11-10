@@ -34,7 +34,7 @@ class IndexWorldTask(QRunnable):
 
     BATCH_SIZE = 24
 
-    def __init__(self, modules, generation, signals, cancelled, max_workers=None):
+    def __init__(self, modules, generation, signals, cancelled, max_workers=None, source_map=None):
         super().__init__()
         self.modules = tuple(modules)
         self.generation = generation
@@ -42,6 +42,7 @@ class IndexWorldTask(QRunnable):
         self.cancelled = cancelled
         cpu_count = os.cpu_count() or 2
         self.max_workers = max_workers or max(1, min(4, cpu_count - 1))
+        self.source_map = source_map or {}
         self.setAutoDelete(True)
 
     @Slot()
@@ -55,7 +56,7 @@ class IndexWorldTask(QRunnable):
             # work to the Qt event thread.
             from .index_worker import index_module
             executor = ProcessPoolExecutor(max_workers=min(self.max_workers, max(1, total)))
-            futures = {executor.submit(index_module, str(entry.path)): entry.path for entry in self.modules}
+            futures = {executor.submit(index_module, str(entry.path), self.source_map.get(str(entry.path.resolve()))): entry.path for entry in self.modules}
             for future in as_completed(futures):
                 if self.cancelled.is_set():
                     break

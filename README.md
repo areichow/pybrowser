@@ -186,7 +186,7 @@ When disk state does not match the expected hash, PyBrowser refuses automatic re
 - Method-kind conversion currently requires a single-line signature.
 - Categories only exist when a Member supplies metadata or qualifies for an inferred category.
 - Structural undo and redo currently operate on transactions whose file states match exact hashes.
-- Multi-file transaction creation and partial-commit recovery are planned for Stage 12D.
+- Multi-file disk transactions now validate and lock all candidates before replacement and roll back earlier replacements after a later failure. Explicit per-file crash progress and complete-forward recovery remain planned.
 - Journal-only staging and selective commit are planned for Stage 12E.
 - PySide6 GUI tests require a Qt-capable environment. The offscreen platform is recommended for CI.
 - Shared path locks coordinate PyBrowser saves, creation, undo, and redo, but cannot prevent an unrelated program from modifying a file at the exact instant of replacement. A final stable signature check reduces this window.
@@ -196,8 +196,9 @@ When disk state does not match the expected hash, PyBrowser refuses automatic re
 - **12A** Recovery Journal
 - **12B** Structural Undo and Redo
 - **12C** Shared Write Service
-- **12D** Git Context and Multi-file Transactions
-- **12E** Journal-only Staging Overlay
+- **12D.0** Overlay-capable Source and Multi-file Disk Commit
+- **12E** Auto/Manual Commit and Journal-only Staging Overlay
+- **12D.1** Git Context and Git-oriented History
 
 Detailed recovery design and transaction semantics are documented in `UNDO_PLAN.md`. Member indentation projection is documented in `INDENTATION_PLAN.md`.
 

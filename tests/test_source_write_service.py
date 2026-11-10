@@ -149,3 +149,60 @@ def test_cooperative_path_lock_rejects_second_writer(tmp_path):
         with pytest.raises(SourceConflictError):
             service.save_document(SaveRequest(read_document(path), 'A = 2\n', 'save_file', 'save'))
     assert journal.transactions() == ()
+
+
+def test_multi_file_save_commits_one_transaction(tmp_path):
+    from pybrowser.source_write_service import MultiSaveRequest
+    world, journal, service, notifications = service_for(tmp_path)
+    first = world / "a.py"; second = world / "b.py"
+    first.write_bytes(b"A = 1\n"); second.write_bytes(b"B = 1\n")
+    result = service.save_documents(MultiSaveRequest(
+        (
+            SaveRequest(read_document(first), "A = 2\n", "save_file", "a"),
+            SaveRequest(read_document(second), "B = 2\n", "save_file", "b"),
+        ), "multi_file_save", "Save two files",
+    ))
+    assert first.read_bytes() == b"A = 2\n"
+    assert second.read_bytes() == b"B = 2\n"
+    assert len(result.transaction.files) == 2
+    assert result.changed_paths == (first.resolve(), second.resolve())
+    assert len(journal.transactions()) == 1
+
+
+def test_multi_file_failure_rolls_back_already_replaced_files(tmp_path, monkeypatch):
+    from pybrowser.source_write_service import MultiSaveRequest, SourceConflictError
+    world, journal, service, notifications = service_for(tmp_path)
+    first = world / "a.py"; second = world / "b.py"
+    first.write_bytes(b"A = 1\n"); second.write_bytes(b"B = 1\n")
+    original = service._replace_bytes
+    calls = []
+    def fail_second(path, data, mode, expected):
+        calls.append(path)
+        if len(calls) == 2:
+            raise SourceConflictError("injected second replacement failure")
+        return original(path, data, mode, expected)
+    monkeypatch.setattr(service, "_replace_bytes", fail_second)
+    with pytest.raises(SourceConflictError):
+        service.save_documents(MultiSaveRequest(
+            (
+                SaveRequest(read_document(first), "A = 2\n", "save_file", "a"),
+                SaveRequest(read_document(second), "B = 2\n", "save_file", "b"),
+            ), "multi_file_save", "Save two files",
+        ))
+    assert first.read_bytes() == b"A = 1\n"
+    assert second.read_bytes() == b"B = 1\n"
+    assert journal.transactions()[0].status == "failed"
+
+
+def test_multi_file_validation_or_conflict_prevents_every_write(tmp_path):
+    from pybrowser.source_write_service import MultiSaveRequest
+    world, journal, service, notifications = service_for(tmp_path)
+    first = world / "a.py"; second = world / "b.py"
+    first.write_bytes(b"A = 1\n"); second.write_bytes(b"B = 1\n")
+    with pytest.raises(ParseError):
+        service.save_documents(MultiSaveRequest((
+            SaveRequest(read_document(first), "A = 2\n", "save_file", "a"),
+            SaveRequest(read_document(second), "def broken(:\n", "save_file", "b"),
+        ), "multi_file_save", "invalid"))
+    assert first.read_bytes() == b"A = 1\n" and second.read_bytes() == b"B = 1\n"
+    assert journal.transactions() == ()

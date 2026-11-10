@@ -518,43 +518,68 @@ class RecoveryJournal:
         finally:
             if owns: connection.close()
 
-    def record_write(self, path: Path, before: bytes, after: bytes, *, operation="save_file",
-                     description="Save file", encoding="utf-8", newline="\n",
-                     location_before=None, location_after=None, mode=None, writer=None):
-        path = Path(path).resolve()
+    def record_writes(self, files, *, operation="save_file", description="Save files",
+                      location_before=None, location_after=None, writer=None):
+        values = tuple(files)
+        if not values:
+            raise ValueError("A recovery transaction requires at least one file")
+        paths = [Path(item["path"]).resolve() for item in values]
+        if len(set(paths)) != len(paths):
+            raise ValueError("A recovery transaction cannot contain duplicate paths")
         now = datetime.now(timezone.utc)
         txid = now.strftime("%Y%m%dT%H%M%S.%fZ") + "-" + uuid.uuid4().hex[:8]
         directory = self.root / txid
-        relative = _safe_relative(path, self.world_root)
-        before_path = directory / "before" / relative
-        after_path = directory / "after" / relative
-        before_path.parent.mkdir(parents=True, exist_ok=True)
-        after_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_durable_bytes(before_path, before)
-        manifest = {
-            "format": FORMAT_VERSION, "transaction_id": txid,
-            "timestamp": now.isoformat(), "description": description,
-            "operation": operation, "status": "prepared", "pinned": False,
-            "committed_to_disk": True, "world_root": str(self.world_root),
-            "writer": writer or "PyBrowser", "damaged": False,
-            "files": [{
+        manifest_files = []
+        after_paths = []
+        for item, path in zip(values, paths):
+            relative = _safe_relative(path, self.world_root)
+            before_path = directory / "before" / relative
+            after_path = directory / "after" / relative
+            before_path.parent.mkdir(parents=True, exist_ok=True)
+            after_path.parent.mkdir(parents=True, exist_ok=True)
+            before = item.get("before", b"")
+            after = item["after"]
+            _write_durable_bytes(before_path, before)
+            manifest_files.append({
                 "path": str(path), "relative_path": relative.as_posix(),
-                "encoding": encoding, "newline": "CRLF" if newline == "\r\n" else "LF",
-                "mode": mode, "before_exists": path.exists(), "after_exists": True,
+                "encoding": item.get("encoding", "utf-8"),
+                "newline": "CRLF" if item.get("newline", "\n") == "\r\n" else "LF",
+                "mode": item.get("mode"),
+                "before_exists": bool(item.get("before_exists", True)),
+                "after_exists": bool(item.get("after_exists", True)),
                 "before_sha256": sha256_bytes(before),
                 "after_sha256": sha256_bytes(after),
                 "before_snapshot": str(Path("before") / relative),
                 "after_snapshot": str(Path("after") / relative),
-            }],
+            })
+            after_paths.append(after_path)
+        manifest = {
+            "format": FORMAT_VERSION, "transaction_id": txid,
+            "timestamp": now.isoformat(), "description": description,
+            "operation": operation, "status": TransactionStatus.PREPARED.value,
+            "pinned": False, "committed_to_disk": True,
+            "world_root": str(self.world_root), "writer": writer or "PyBrowser",
+            "damaged": False, "files": manifest_files,
             "location_before": location_before, "location_after": location_after,
         }
         _json_write(directory / "manifest.json", manifest)
         self._upsert_manifest(directory, manifest)
-        manifest["status"] = "committing"
+        manifest["status"] = TransactionStatus.COMMITTING.value
         self._upsert_manifest(directory, manifest)
         transaction = self.get(txid)
         _json_write(directory / "manifest.json", transaction.manifest)
-        return directory, dict(transaction.manifest), after_path
+        return directory, dict(transaction.manifest), tuple(after_paths)
+
+    def record_write(self, path: Path, before: bytes, after: bytes, *, operation="save_file",
+                     description="Save file", encoding="utf-8", newline="\n",
+                     location_before=None, location_after=None, mode=None, writer=None):
+        directory, manifest, after_paths = self.record_writes(({
+            "path": path, "before": before, "after": after,
+            "encoding": encoding, "newline": newline, "mode": mode,
+            "before_exists": Path(path).exists(), "after_exists": True,
+        },), operation=operation, description=description,
+            location_before=location_before, location_after=location_after, writer=writer)
+        return directory, manifest, after_paths[0]
 
     def update_prepared(self, directory: Path, manifest: dict):
         """Persist metadata changes, then rebuild the portable mirror from SQLite."""
@@ -563,9 +588,13 @@ class RecoveryJournal:
         _json_write(directory / "manifest.json", current.manifest)
         manifest.clear(); manifest.update(current.manifest)
 
-    def finalize(self, directory: Path, manifest: dict, after_path: Path, after: bytes):
-        """Persist the core commit. Housekeeping failures become warnings."""
-        _write_durable_bytes(after_path, after)
+    def finalize_many(self, directory: Path, manifest: dict, after_paths, after_values):
+        """Persist all after snapshots and atomically complete journal metadata."""
+        after_paths = tuple(after_paths); after_values = tuple(after_values)
+        if len(after_paths) != len(after_values) or len(after_paths) != len(manifest.get("files", ())):
+            raise ValueError("After snapshot count does not match transaction files")
+        for path, data in zip(after_paths, after_values):
+            _write_durable_bytes(path, data)
         manifest["status"] = TransactionStatus.COMMITTED.value
         manifest["committed_at"] = datetime.now(timezone.utc).isoformat()
         self._upsert_manifest(directory, manifest)
@@ -581,6 +610,9 @@ class RecoveryJournal:
             try: action()
             except Exception as exc: warnings.append(f"{label} failed: {exc}")
         return transaction, tuple(warnings)
+
+    def finalize(self, directory: Path, manifest: dict, after_path: Path, after: bytes):
+        return self.finalize_many(directory, manifest, (after_path,), (after,))
 
     def emit_change(self):
         callback = getattr(self, "on_change", None)

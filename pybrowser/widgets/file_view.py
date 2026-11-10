@@ -21,7 +21,7 @@ class FileViewWindow(QMainWindow):
         self.path = Path(path).resolve()
         self.workspace = workspace
         self.workspace.register(self, "file-view")
-        self.document_model = read_document(self.path)
+        self.document_model = self.workspace.read_document(self.path)
         self.editor = Editor()
         self.find_dialog = None
         self.last_find = ("", False, False)
@@ -162,7 +162,7 @@ class FileViewWindow(QMainWindow):
         except (OSError, ParseError) as exc: QMessageBox.critical(self, "Save failed", str(exc))
 
     def abandon(self):
-        self.document_model = read_document(self.path); self.editor.setPlainText(self.document_model.text); self.editor.document().setModified(False)
+        self.document_model = self.workspace.read_document(self.path); self.editor.setPlainText(self.document_model.text); self.editor.document().setModified(False)
         self.results_container.hide()
 
     def _workspace_changed(self, path, origin):

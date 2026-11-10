@@ -87,14 +87,14 @@ def symbols_for_module(path: Path, dotted_name: str, scopes) -> tuple[SymbolEntr
     return tuple(values)
 
 
-def search_file(path: Path, dotted_name: str, query: str) -> tuple[SearchResult, ...]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        import tokenize
-        with path.open("rb") as stream:
-            encoding, _ = tokenize.detect_encoding(stream.readline)
-        text = path.read_text(encoding=encoding)
+def search_file(path: Path, dotted_name: str, query: str, source_map=None) -> tuple[SearchResult, ...]:
+    raw = (source_map or {}).get(str(Path(path).resolve()))
+    if raw is None:
+        raw = Path(path).read_bytes()
+    import io
+    import tokenize
+    encoding, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
+    text = raw.decode(encoding)
     starts = [0]
     for index, char in enumerate(text):
         if char == "\n":

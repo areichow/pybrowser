@@ -33,8 +33,10 @@ def callable_name_from_label(label: str) -> str:
     return value.split("  (", 1)[0].split("(", 1)[0].strip()
 
 
-def _read(path: Path) -> str:
-    raw = path.read_bytes()
+def _read(path: Path, source_map=None) -> str:
+    raw = (source_map or {}).get(str(path.resolve()))
+    if raw is None:
+        raw = path.read_bytes()
     encoding, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
     return raw.decode(encoding)
 
@@ -44,12 +46,12 @@ def _entry_name(world, path: Path) -> str:
     return entry.dotted_name if entry else path.stem
 
 
-def implementers(world, name: str, progress=None) -> tuple[CodeQueryResult, ...]:
+def implementers(world, name: str, progress=None, source_map=None) -> tuple[CodeQueryResult, ...]:
     results = []
     total = len(world.modules)
     for index, entry in enumerate(world.modules, 1):
         try:
-            text = _read(entry.path)
+            text = _read(entry.path, source_map)
             scopes = build_index(entry.path, text)
         except (OSError, UnicodeError, ValueError):
             continue
@@ -73,12 +75,12 @@ def _called_name(call: ast.Call) -> str | None:
     return None
 
 
-def senders(world, name: str, progress=None) -> tuple[CodeQueryResult, ...]:
+def senders(world, name: str, progress=None, source_map=None) -> tuple[CodeQueryResult, ...]:
     results = []
     total = len(world.modules)
     for index, entry in enumerate(world.modules, 1):
         try:
-            text = _read(entry.path)
+            text = _read(entry.path, source_map)
             tree = ast.parse(text, filename=str(entry.path))
             scopes = build_index(entry.path, text)
         except (OSError, UnicodeError, SyntaxError, ValueError):

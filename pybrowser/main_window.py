@@ -821,7 +821,7 @@ class MainWindow(QMainWindow):
 
     def _open_module(self, path, restore=None, fallback_row=None):
         try:
-            document = read_document(Path(path))
+            document = self.workspace.read_document(Path(path))
             semantic = analyze_source(document.path, document.text)
         except Exception as exc:
             QMessageBox.critical(self, "Cannot open module", str(exc))
@@ -995,7 +995,7 @@ class MainWindow(QMainWindow):
         if not modules:
             self.statusBar().showMessage(f"World ready: {len(self.world.modules)} module(s)", 4000)
             return
-        task = IndexWorldTask(modules, generation, self.index_signals, self.index_cancelled)
+        task = IndexWorldTask(modules, generation, self.index_signals, self.index_cancelled, source_map=self.workspace.source_store.source_map())
         self.thread_pool.start(task)
         self.busy_indicator.begin("Source model indexing", len(modules))
         self.statusBar().showMessage(f"Indexing 0/{len(modules)} modules...")
@@ -1467,7 +1467,7 @@ class MainWindow(QMainWindow):
     def show_references(self, name, kinds=None):
         if not self.world or not name:
             return
-        results = references_in_world(self.world, self.semantic_modules, name, kinds)
+        results = references_in_world(self.world, self.semantic_modules, name, kinds, self.workspace.source_store)
         title = f"References to {name}"
         if results:
             self._show_code_query_dialog(title, results)
@@ -1487,7 +1487,7 @@ class MainWindow(QMainWindow):
         task_id = self.work_sequence
         self.active_work[task_id] = (operation, argument)
         self.busy_indicator.begin(f"Source model working: {operation.replace('_', ' ')}")
-        task = WorldQueryTask(task_id, operation, self.world, argument, self.work_signals)
+        task = WorldQueryTask(task_id, operation, self.world, argument, self.work_signals, self.workspace.source_store.source_map())
         self.thread_pool.start(task)
 
     def _work_started(self, task_id, label):

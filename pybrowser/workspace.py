@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 
 from .recovery import RecoveryConflictError, RecoveryJournal
 from .source_write_service import SourceWriteService
+from .world_source import WorldSourceStore
 
 
 class WorkspaceUndoError(RuntimeError):
@@ -31,6 +32,7 @@ class Workspace(QObject):
         self.active_browser = None
         self.journal = None
         self.write_service = None
+        self.source_store = None
 
     def set_world(self, world):
         self.world = world
@@ -42,9 +44,17 @@ class Workspace(QObject):
             max_megabytes=settings.value("recovery/maxMegabytes", 500, int),
         )
         self.journal.on_change = self.history_changed.emit
-        self.write_service = SourceWriteService(self.journal, self.announce_file_changed)
+        self.source_store = WorldSourceStore(world.root)
+        self.write_service = SourceWriteService(
+            self.journal, self.announce_file_changed, source_store=self.source_store
+        )
         self.world_changed.emit(world)
         self.history_changed.emit()
+
+    def read_document(self, path):
+        if self.source_store is None:
+            raise RuntimeError("Open a World before reading source")
+        return self.source_store.read_document(path)
 
     def announce_file_changed(self, path: Path, origin=None):
         self.file_changed.emit(Path(path).resolve(), origin)

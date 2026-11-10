@@ -16,13 +16,14 @@ class WorkSignals(QObject):
 class WorldQueryTask(QRunnable):
     """Run expensive world queries without touching Qt widgets."""
 
-    def __init__(self, task_id, operation, world, argument, signals):
+    def __init__(self, task_id, operation, world, argument, signals, source_map=None):
         super().__init__()
         self.task_id = task_id
         self.operation = operation
         self.world = world
         self.argument = argument
         self.signals = signals
+        self.source_map = source_map or {}
         self.setAutoDelete(True)
 
     @Slot()
@@ -35,15 +36,15 @@ class WorldQueryTask(QRunnable):
         self.signals.started.emit(self.task_id, label)
         try:
             if self.operation == "implementers":
-                result = implementers(self.world, self.argument, self._progress)
+                result = implementers(self.world, self.argument, self._progress, self.source_map)
             elif self.operation == "senders":
-                result = senders(self.world, self.argument, self._progress)
+                result = senders(self.world, self.argument, self._progress, self.source_map)
             else:
                 values = []
                 total = len(self.world.modules)
                 for index, entry in enumerate(self.world.modules, 1):
                     try:
-                        values.extend(search_file(entry.path, entry.dotted_name, self.argument))
+                        values.extend(search_file(entry.path, entry.dotted_name, self.argument, self.source_map))
                     except (OSError, UnicodeError):
                         pass
                     self._progress(index, total, entry.dotted_name)

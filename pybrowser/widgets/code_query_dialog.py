@@ -70,7 +70,7 @@ class CodeQueryDialog(QMainWindow):
         if not (0 <= row < len(self.results_data)): return
         result = self.results_data[row]
         try:
-            self.current_document = read_document(result.module)
+            self.current_document = self.workspace.read_document(result.module)
             scope = next((s for s in self.current_document.scopes if s.name == result.scope), None)
             self.current_member = next((m for m in scope.members if not m.synthetic and m.label == result.label), None) if scope else None
             if self.current_member:

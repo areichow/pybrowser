@@ -238,3 +238,8 @@ Path locking is extracted into `PathLockService`. Source saves, exclusive file c
 ##### Revision 12.18 platform-neutral recovery tests
 
 Recovery hash and interrupted-history tests now construct and verify exact bytes rather than text translated by the Windows newline layer. Source-inspection tests explicitly decode UTF-8, and the Workspace test uses a real `World` contract. An LF/CRLF regression verifies that manifest hashes equal the actual before and after snapshot bytes.
+
+
+##### Revision 12.20 overlay-capable source and multi-file commit foundation
+
+Added `WorldSourceStore` as the Workspace-owned source read boundary. Browser and File View document loads, editable queries, Implementers, Senders, World search, references, and process-based indexing can consume overlay bytes while Auto-Commit behavior remains unchanged. `SourceWriteService.save_documents()` now validates every candidate, acquires all path locks in canonical order, records one multi-file recovery transaction, replaces each source, and rolls back earlier replacements in reverse order if a later replacement fails. Manual staging, commit UI, quit disposition, and durable overlay restoration remain subsequent revisions.
