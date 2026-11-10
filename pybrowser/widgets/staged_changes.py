@@ -4,7 +4,7 @@ import difflib
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QListWidget, QMainWindow, QMessageBox,
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from ..saving import stable_read
 from ..source_write_service import SourceConflictError
+from ..workspace import WorkspaceStagingError
 from ..windowing import install_window_commands
 
 
@@ -35,6 +36,7 @@ class StagedChangesWindow(QMainWindow):
 
     def __init__(self, workspace, parent=None):
         super().__init__(None)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.workspace = workspace
         self.workspace.register(self, "staged-changes")
         self.changes: list[StagedChange] = []
@@ -79,7 +81,11 @@ class StagedChangesWindow(QMainWindow):
 
         self.list.currentRowChanged.connect(self._selected)
         self.workspace.history_changed.connect(self.refresh)
-        self.workspace.world_changed.connect(lambda _world: self.refresh())
+        self.workspace.world_changed.connect(self._world_changed)
+        self.refresh()
+
+    @Slot(object)
+    def _world_changed(self, _world):
         self.refresh()
 
     @staticmethod
@@ -132,7 +138,7 @@ class StagedChangesWindow(QMainWindow):
                 selected_row = row
         self.summary.setText(
             f"{len(self.changes)} staged file(s), {conflicts} conflict(s). "
-            "Physical source is unchanged until Commit."
+            "Only active staged files are listed. CONFLICT means disk changed after staging."
         )
         if self.changes:
             self.list.setCurrentRow(selected_row)
@@ -177,19 +183,28 @@ class StagedChangesWindow(QMainWindow):
             after = self.workspace.journal.snapshot_path(tx, "after").read_text(
                 encoding=encoding, errors="replace").splitlines()
             relative = item.get("relative_path") or change.path.name
-            diff = difflib.unified_diff(before, after, fromfile="disk/" + relative,
+            diff = difflib.unified_diff(before, after, fromfile="baseline/" + relative,
                                         tofile="staged/" + relative, lineterm="")
             self.diff.setPlainText("\n".join(diff) or "No textual differences")
         except OSError as exc:
             self.diff.setPlainText(f"Snapshot unavailable: {exc}")
+
+    def _show_staging_error(self, title, exc):
+        QMessageBox.warning(self, title, str(exc))
+        if getattr(exc, "windows", ()):
+            self.workspace.activate_window(exc.windows[0])
 
     def commit_selected(self):
         change = self.current_change()
         if change is None:
             return
         try:
-            self.workspace.write_service.commit_staged(change.path, self)
+            result = self.workspace.commit_staged_path(change.path, self)
             self.statusBar().showMessage(f"Committed {change.path.name} to disk", 6000)
+            if result.warnings:
+                QMessageBox.warning(self, "Committed with warning", "\n".join(result.warnings))
+        except WorkspaceStagingError as exc:
+            self._show_staging_error("Commit Refused", exc)
         except (SourceConflictError, OSError) as exc:
             QMessageBox.warning(self, "Commit Refused", str(exc))
         self.refresh()
@@ -206,7 +221,11 @@ class StagedChangesWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self.workspace.write_service.discard_staged(change.path, self)
+        try:
+            self.workspace.discard_staged_path(change.path, self)
+        except WorkspaceStagingError as exc:
+            self._show_staging_error("Abandon Refused", exc)
+            return
         self.statusBar().showMessage(f"Abandoned staged change for {change.path.name}", 6000)
         self.refresh()
 
@@ -214,8 +233,13 @@ class StagedChangesWindow(QMainWindow):
         if not self.changes:
             return
         try:
-            self.workspace.commit_all_staged(self)
+            results = self.workspace.commit_all_staged(self)
             self.statusBar().showMessage("Committed all staged changes to disk", 6000)
+            warnings = tuple(dict.fromkeys(w for result in results for w in result.warnings))
+            if warnings:
+                QMessageBox.warning(self, "Committed with warning", "\n".join(warnings))
+        except WorkspaceStagingError as exc:
+            self._show_staging_error("Commit All Refused", exc)
         except (SourceConflictError, OSError) as exc:
             QMessageBox.warning(self, "Commit All Refused", str(exc))
         self.refresh()
@@ -231,7 +255,11 @@ class StagedChangesWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self.workspace.discard_all_staged(self)
+        try:
+            self.workspace.discard_all_staged(self)
+        except WorkspaceStagingError as exc:
+            self._show_staging_error("Abandon All Refused", exc)
+            return
         self.statusBar().showMessage("Abandoned all staged changes", 6000)
         self.refresh()
 

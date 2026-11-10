@@ -251,3 +251,21 @@ def test_quit_view_changes_uses_staged_changes_window():
         "    def run_type_check", source.index("    def _staged_exit_disposition"))]
     assert "self.show_staged_changes()" in method
     assert "self.show_structural_history()" not in method
+
+
+def test_staged_changes_window_uses_bound_slot_and_delete_on_close():
+    source = Path("pybrowser/widgets/staged_changes.py").read_text(encoding="utf-8")
+    assert "WA_DeleteOnClose" in source
+    assert "world_changed.connect(self._world_changed)" in source
+    assert "world_changed.connect(lambda" not in source
+    assert 'fromfile="baseline/"' in source
+    assert "Only active staged files are listed" in source
+
+
+def test_staged_finalization_housekeeping_returns_warnings():
+    recovery = Path("pybrowser/recovery.py").read_text(encoding="utf-8")
+    service = Path("pybrowser/source_write_service.py").read_text(encoding="utf-8")
+    assert "class StagedCompletionResult" in recovery
+    assert "Portable manifest repair failed" in recovery
+    assert "History notification failed" in recovery
+    assert "completion.warnings" in service

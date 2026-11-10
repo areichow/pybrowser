@@ -68,3 +68,35 @@ def test_commit_all_is_atomic_when_later_path_conflicts(tmp_path):
     with pytest.raises(SourceConflictError): service.commit_all_staged()
     assert first.read_bytes()==b'A = 1\n' and second.read_bytes()==b'EXTERNAL = 9\n'
     assert len(store.staged_paths())==2 and len(journal.active_overlays())==2
+
+
+def test_selected_commit_manifest_failure_is_warning_after_authority(tmp_path, monkeypatch):
+    import pybrowser.recovery as recovery
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_bytes(b'A = 1\n')
+    journal,store,service=staging_service(world,tmp_path/'history')
+    staged=service.save_document(SaveRequest(read_document(path),'A = 2\n','save_file','stage'))
+    original=recovery._json_write
+    def fail_manifest(target, value):
+        if target == staged.transaction.directory/'manifest.json':
+            raise OSError('mirror failed')
+        return original(target,value)
+    monkeypatch.setattr(recovery,'_json_write',fail_manifest)
+    result=SourceWriteService(journal,source_store=store).commit_staged(path)
+    assert path.read_bytes()==b'A = 2\n'
+    assert journal.active_overlays()==() and store.staged_paths()==()
+    assert journal.get(staged.transaction.transaction_id).manifest['committed_to_disk'] is True
+    assert result.warnings and 'Portable manifest repair failed' in result.warnings[0]
+
+
+def test_commit_all_notification_failure_does_not_roll_back_disk(tmp_path):
+    world=tmp_path/'world'; world.mkdir(); first=world/'a.py'; second=world/'b.py'
+    first.write_bytes(b'A = 1\n'); second.write_bytes(b'B = 1\n')
+    journal,store,service=staging_service(world,tmp_path/'history')
+    service.save_document(SaveRequest(read_document(first),'A = 2\n','save_file','a'))
+    service.save_document(SaveRequest(read_document(second),'B = 2\n','save_file','b'))
+    journal.on_change=lambda: (_ for _ in ()).throw(RuntimeError('notify failed'))
+    results=service.commit_all_staged()
+    assert first.read_bytes()==b'A = 2\n' and second.read_bytes()==b'B = 2\n'
+    assert journal.active_overlays()==() and store.staged_paths()==()
+    assert all(any('History notification failed' in warning for warning in result.warnings)
+               for result in results)

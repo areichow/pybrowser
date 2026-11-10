@@ -196,6 +196,12 @@ class RecoveryTransaction:
     def post_commit_error(self): return self.manifest.get("post_commit_error")
 
 
+@dataclass(frozen=True, slots=True)
+class StagedCompletionResult:
+    transactions: tuple[RecoveryTransaction, ...]
+    warnings: tuple[str, ...] = ()
+
+
 class RecoveryJournal:
     """SQLite-indexed metadata with portable per-transaction JSON manifests."""
 
@@ -603,24 +609,38 @@ class RecoveryJournal:
         return transaction
 
     def complete_staged_commits(self, transactions):
+        """Commit authoritative state before fallible mirror maintenance."""
         transactions = tuple(transactions)
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             for transaction in transactions:
-                cursor = db.execute("DELETE FROM active_overlays WHERE transaction_id = ?", (transaction.transaction_id,))
+                cursor = db.execute(
+                    "DELETE FROM active_overlays WHERE transaction_id = ?",
+                    (transaction.transaction_id,),
+                )
                 if cursor.rowcount != 1:
                     raise RecoveryConflictError("A staged change is no longer active.", transaction)
-                db.execute("UPDATE transactions SET committed_to_disk = 1 WHERE id = ?", (transaction.transaction_id,))
-        values = []
-        for transaction in transactions:
-            current = self.get(transaction.transaction_id)
-            _json_write(current.directory / "manifest.json", current.manifest)
-            values.append(current)
-        self.emit_change()
-        return tuple(values)
+                db.execute(
+                    "UPDATE transactions SET committed_to_disk = 1 WHERE id = ?",
+                    (transaction.transaction_id,),
+                )
+        values = tuple(self.get(item.transaction_id) for item in transactions)
+        warnings = []
+        for current in values:
+            try:
+                _json_write(current.directory / "manifest.json", current.manifest)
+            except Exception as exc:
+                warnings.append(
+                    f"Portable manifest repair failed for {current.transaction_id}: {exc}"
+                )
+        try:
+            self.emit_change()
+        except Exception as exc:
+            warnings.append(f"History notification failed: {exc}")
+        return StagedCompletionResult(values, tuple(warnings))
 
     def complete_staged_commit(self, transaction):
-        return self.complete_staged_commits((transaction,))[0]
+        return self.complete_staged_commits((transaction,))
 
     def discard_staged(self, path):
         path = Path(path).resolve()

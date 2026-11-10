@@ -306,13 +306,14 @@ class SourceWriteService:
                         raise SourceConflictError(f"{path} now exists. The staged change was retained.")
                     try: self._create_bytes_exclusive(path, overlay.data, overlay.mode)
                     except FileExistsError as exc: raise SourceConflictError(f"{path} now exists. The staged change was retained.") from exc
-                transaction = self.journal.complete_staged_commit(transaction)
+                completion = self.journal.complete_staged_commit(transaction)
+                transaction = completion.transactions[0]
                 self.source_store.discard(path, notify=False)
         except PathLockError as exc:
             raise SourceConflictError(str(exc)) from exc
         refreshed = self._read_document(path)
         if self.notify: self.notify(path, origin)
-        return SaveResult(refreshed, transaction, (path,))
+        return SaveResult(refreshed, transaction, (path,), completion.warnings)
 
     def commit_all_staged(self, origin=None):
         if not self.source_store:
@@ -347,7 +348,8 @@ class SourceWriteService:
                         else:
                             self._create_bytes_exclusive(path, overlay.data, overlay.mode)
                         replaced.append(path)
-                    completed = self.journal.complete_staged_commits(tuple(item[2] for item in entries))
+                    completion = self.journal.complete_staged_commits(tuple(item[2] for item in entries))
+                    completed = completion.transactions
                 except Exception:
                     for path, existed, data, mode in reversed(backups[:len(replaced)]):
                         try:
@@ -363,7 +365,7 @@ class SourceWriteService:
         for (path, _overlay, _old, _exists), transaction in zip(entries, completed):
             document = self._read_document(path)
             if self.notify: self.notify(path, origin)
-            results.append(SaveResult(document, transaction, (path,)))
+            results.append(SaveResult(document, transaction, (path,), completion.warnings))
         return tuple(results)
 
     def discard_staged(self, path: Path, origin=None):

@@ -263,3 +263,8 @@ Overlay publication no longer emits an origin-less synchronous reload while `Sou
 ##### Revision 12.22 dedicated Staged Changes review
 
 `File > View Staged Changes` now opens a modeless Staged Changes window instead of the general Structural History window. It lists one active overlay per path, distinguishes existing files from virtual new files, rechecks physical baselines on refresh, highlights external conflicts, and shows a unified disk-to-staged snapshot diff with transaction metadata. Actions include Commit Selected, Abandon Selected, Open Staged Source, Commit All, Abandon All, and Refresh. Commit Selected is disabled when the selected physical baseline conflicts, while abandon and inspection remain available. Quit and World-switch `View Changes` now open this dedicated window and cancel the pending lifecycle action.
+
+
+###### Revision 12.22.1 staged finalization authority and lifecycle hardening
+
+Staged commit finalization now commits authoritative SQLite state before best-effort JSON mirror reconstruction and history notification. Mirror or notification failures return post-commit warnings and never trigger physical rollback after SQLite has committed. Commit Selected, Commit All, Abandon Selected, and Abandon All route through Workspace unsaved-window protection. Staged Changes uses a bound Qt slot, `WA_DeleteOnClose`, and deleted-child pruning; its summary explains that only active overlays are listed and its diff labels the left side `baseline/` rather than current disk.

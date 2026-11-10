@@ -11,6 +11,12 @@ from .world_source import WorldSourceStore
 from .project import World
 
 
+class WorkspaceStagingError(RuntimeError):
+    def __init__(self, message, windows=()):
+        super().__init__(message)
+        self.windows = tuple(windows)
+
+
 class WorkspaceUndoError(RuntimeError):
     def __init__(self, message, windows=(), conflict=None):
         super().__init__(message)
@@ -82,10 +88,35 @@ class Workspace(QObject):
         if self.write_service:
             self.write_service.write_mode = mode
 
+    def _ensure_staging_paths_are_saved(self, paths, action):
+        modified = self.unsaved_windows_for(paths)
+        if modified:
+            names = ", ".join(
+                window.windowTitle().replace("[*]", "").strip() for window in modified
+            )
+            raise WorkspaceStagingError(
+                f"Cannot {action} while affected windows have unsaved edits: {names}",
+                modified,
+            )
+
+    def commit_staged_path(self, path, origin=None):
+        path = Path(path).resolve()
+        self._ensure_staging_paths_are_saved((path,), "commit staged changes")
+        return self.write_service.commit_staged(path, origin)
+
     def commit_all_staged(self, origin=None):
+        paths = self.staged_paths()
+        self._ensure_staging_paths_are_saved(paths, "commit staged changes")
         return self.write_service.commit_all_staged(origin) if self.write_service else ()
 
+    def discard_staged_path(self, path, origin=None):
+        path = Path(path).resolve()
+        self._ensure_staging_paths_are_saved((path,), "abandon staged changes")
+        return self.write_service.discard_staged(path, origin)
+
     def discard_all_staged(self, origin=None):
+        paths = self.staged_paths()
+        self._ensure_staging_paths_are_saved(paths, "abandon staged changes")
         return self.write_service.discard_all_staged(origin) if self.write_service else ()
 
     def effective_world(self):

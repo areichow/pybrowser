@@ -48,3 +48,16 @@ def test_overlay_notifications_publish_effective_world_once(tmp_path):
     assert file_events == [(path.resolve(), origin)]
     assert len(world_events) == 1
     assert world_events[0].modules[0].path == path.resolve()
+
+
+def test_staged_commit_and_abandon_block_unsaved_affected_windows(tmp_path, monkeypatch):
+    from pybrowser.workspace import WorkspaceStagingError
+    path = tmp_path / "app.py"; path.write_bytes(b"A = 1\n")
+    workspace = Workspace(); workspace.set_world(open_world(path))
+    class Blocker:
+        def windowTitle(self): return "Unsaved File View[*]"
+    blocker = Blocker()
+    monkeypatch.setattr(workspace, "unsaved_windows_for", lambda paths: (blocker,))
+    monkeypatch.setattr(workspace, "activate_window", lambda window: None)
+    with pytest.raises(WorkspaceStagingError): workspace.commit_staged_path(path)
+    with pytest.raises(WorkspaceStagingError): workspace.discard_staged_path(path)

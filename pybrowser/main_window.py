@@ -16,7 +16,7 @@ from .widgets.member_delegate import MemberDelegate
 from .widgets.code_query_dialog import CodeQueryDialog
 from .widgets.file_view import FileViewWindow
 from .widgets.browser_lists import CategoryListWidget, MemberListWidget
-from .workspace import Workspace, WorkspaceUndoError
+from .workspace import Workspace, WorkspaceStagingError, WorkspaceUndoError
 from .work_tasks import WorkSignals, WorldQueryTask
 from .widgets.busy_indicator import BusyIndicator
 from .code_queries import callable_name_from_label, implementers, senders
@@ -45,6 +45,7 @@ from .widgets.staged_changes import StagedChangesWindow
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
 from PySide6.QtWidgets import QTextEdit
+from shiboken6 import isValid
 QPlainTextEditExtraSelection = QTextEdit.ExtraSelection
 
 class MainWindow(QMainWindow):
@@ -407,9 +408,17 @@ class MainWindow(QMainWindow):
         if not paths:
             self.statusBar().showMessage("No staged changes", 4000); return True
         try:
-            self.workspace.commit_all_staged(self)
+            results = self.workspace.commit_all_staged(self)
             self.statusBar().showMessage(f"Committed {len(paths)} staged file(s) to disk", 6000)
+            warnings = tuple(dict.fromkeys(w for result in results for w in result.warnings))
+            if warnings:
+                QMessageBox.warning(self, "Committed with warning", "\n".join(warnings))
             return True
+        except WorkspaceStagingError as exc:
+            QMessageBox.warning(self, "Commit Changes Refused", str(exc))
+            if exc.windows:
+                self.workspace.activate_window(exc.windows[0])
+            return False
         except (SourceConflictError, OSError) as exc:
             QMessageBox.warning(self, "Commit Changes Refused", str(exc))
             return False
@@ -423,7 +432,13 @@ class MainWindow(QMainWindow):
                 f"Permanently abandon {len(paths)} staged file change(s)? Physical source files will remain unchanged.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
             if answer != QMessageBox.StandardButton.Yes: return False
-        self.workspace.discard_all_staged(self)
+        try:
+            self.workspace.discard_all_staged(self)
+        except WorkspaceStagingError as exc:
+            QMessageBox.warning(self, "Abandon Changes Refused", str(exc))
+            if exc.windows:
+                self.workspace.activate_window(exc.windows[0])
+            return False
         self.statusBar().showMessage(f"Abandoned {len(paths)} staged file change(s)", 6000)
         return True
 
@@ -1977,6 +1992,7 @@ class MainWindow(QMainWindow):
         if not self.workspace.journal:
             QMessageBox.information(self, "Staged Changes", "Open a World before viewing staged changes.")
             return
+        self.child_windows = [window for window in self.child_windows if isValid(window)]
         existing = next((window for window in self.child_windows
                          if isinstance(window, StagedChangesWindow) and window.isVisible()), None)
         if existing is not None:
