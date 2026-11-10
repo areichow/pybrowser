@@ -178,6 +178,8 @@ Critical regression scenarios include:
 - Prefer explicit dataclasses and enums at integrity boundaries.
 - Keep portable manifest fields distinct from SQLite implementation fields.
 - Preserve encoding, newline style, final newline, file mode, and unrelated source.
+- Recovery hashes and snapshot assertions operate on exact bytes. On Windows, never use `Path.write_text()` or `Path.read_text()` to prepare or verify hash-sensitive fixtures because newline translation can change LF to CRLF.
+- Source-inspection tests must pass `encoding="utf-8"` to `Path.read_text()` so Windows active-code-page settings cannot break Unicode source.
 - Avoid broad exception handling around source-integrity operations.
 - Keep UI presentation separate from journal and disk coordination.
 - Do not introduce a second write path for tests.

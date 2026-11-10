@@ -233,3 +233,8 @@ The GUI regression now distinguishes durable structural selection from ephemeral
 ##### Revision 12.17 shared path-lock service
 
 Path locking is extracted into `PathLockService`. Source saves, exclusive file creation, undo, and redo now use the same journal-owned lock namespace. Multi-path acquisition deduplicates resolved paths and locks them in canonical case-folded order, which establishes the deadlock-avoidance rule required by Stage 12D. History restoration acquires every affected lock before claiming `undoing` or `redoing`, so lock contention leaves transaction state unchanged.
+
+
+##### Revision 12.18 platform-neutral recovery tests
+
+Recovery hash and interrupted-history tests now construct and verify exact bytes rather than text translated by the Windows newline layer. Source-inspection tests explicitly decode UTF-8, and the Workspace test uses a real `World` contract. An LF/CRLF regression verifies that manifest hashes equal the actual before and after snapshot bytes.

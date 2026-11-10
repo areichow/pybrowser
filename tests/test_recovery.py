@@ -8,16 +8,16 @@ from pybrowser.source_write_service import SaveRequest, SourceWriteService
 
 def test_journaled_write_records_snapshots_and_manifest(tmp_path):
     world = tmp_path / "world"; world.mkdir()
-    path = world / "app.py"; path.write_text("VALUE = 1\n")
+    path = world / "app.py"; path.write_bytes(b"VALUE = 1\n")
     doc = read_document(path)
     journal = RecoveryJournal(world, tmp_path / "history")
     tx = SourceWriteService(journal).save_document(SaveRequest(doc, "VALUE = 2\n", "save_member", "Save Member VALUE")).transaction
-    assert path.read_text() == "VALUE = 2\n"
+    assert path.read_bytes() == b"VALUE = 2\n"
     manifest = json.loads((tx.directory / "manifest.json").read_text())
     assert manifest["status"] == "committed"
     assert manifest["operation"] == "save_member"
-    assert journal.snapshot_path(tx, "before").read_text() == "VALUE = 1\n"
-    assert journal.snapshot_path(tx, "after").read_text() == "VALUE = 2\n"
+    assert journal.snapshot_path(tx, "before").read_bytes() == b"VALUE = 1\n"
+    assert journal.snapshot_path(tx, "after").read_bytes() == b"VALUE = 2\n"
     assert manifest["files"][0]["before_sha256"] == sha256_bytes(b"VALUE = 1\n")
 
 
@@ -413,8 +413,9 @@ def test_interrupted_redo_claim_can_roll_back_or_finalize_after_restart(tmp_path
     claimed=journal.set_status(undone,TransactionStatus.REDOING.value,expected_statuses={'undone'})
     reopened=RecoveryJournal(world,history); assert reopened.resolve_incomplete(reopened.get(tx.transaction_id),'abort').status == 'undone'
     claimed=reopened.set_status(reopened.get(tx.transaction_id),'redoing',expected_statuses={'undone'})
-    path.write_text('A = 2\n')
-    assert RecoveryJournal(world,history).resolve_incomplete(RecoveryJournal(world,history).get(tx.transaction_id),'finalize').status == 'redone'
+    path.write_bytes(reopened.snapshot_path(claimed, 'after').read_bytes())
+    final_journal = RecoveryJournal(world, history)
+    assert final_journal.resolve_incomplete(final_journal.get(tx.transaction_id), 'finalize').status == 'redone'
 
 
 def test_pruning_recovery_restores_existing_directory_and_deletes_missing(tmp_path):
@@ -504,3 +505,17 @@ def test_multi_path_locks_use_canonical_order_and_deduplicate(tmp_path):
         assert acquired == tuple(sorted({first.resolve(), second.resolve()}, key=lambda p: str(p).casefold()))
         assert len(list((tmp_path/'locks').glob('*.lock'))) == 2
     assert list((tmp_path/'locks').glob('*.lock')) == []
+
+
+def test_manifest_hashes_exact_snapshot_bytes(tmp_path):
+    world = tmp_path / "world"; world.mkdir()
+    path = world / "app.py"; path.write_bytes(b"A = 1\r\n")
+    journal = RecoveryJournal(world, tmp_path / "history")
+    tx = SourceWriteService(journal).save_document(
+        SaveRequest(read_document(path), "A = 2\r\n", "save_file", "save")
+    ).transaction
+    before = journal.snapshot_path(tx, "before").read_bytes()
+    after = journal.snapshot_path(tx, "after").read_bytes()
+    assert tx.files[0]["before_sha256"] == sha256_bytes(before)
+    assert tx.files[0]["after_sha256"] == sha256_bytes(after)
+    assert path.read_bytes() == after
