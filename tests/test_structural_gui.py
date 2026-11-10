@@ -4,7 +4,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QSignalBlocker
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from pybrowser.main_window import MainWindow
@@ -65,6 +64,9 @@ def test_duplicate_then_rename_changes_only_inserted_method(tmp_path, app, monke
         # therefore cannot be used for offset comparisons.
         assert window.member.span.start == window.doc.text.rindex("    def run(self):")
         assert window.doc.source(window.member).lstrip().startswith("def run(self):")
+        duplicate_cursor = window.editor.textCursor()
+        assert duplicate_cursor.hasSelection()
+        assert duplicate_cursor.selectedText() == "run"
 
         # Re-run the ambiguous label restoration directly, without starting
         # ProcessPoolExecutor or QFileSystemWatcher activity in this unit test.
@@ -78,6 +80,9 @@ def test_duplicate_then_rename_changes_only_inserted_method(tmp_path, app, monke
         assert window.member.span.start == window.doc.text.rindex("    def run(self):")
         assert window.doc.source(window.member).lstrip().startswith("def run(self):")
 
+        # A general module reload restores structural identity, not an ephemeral
+        # editor selection. Reapply the rename affordance before simulating typing.
+        window._select_member_identifier()
         cursor = window.editor.textCursor()
         assert cursor.hasSelection() and cursor.selectedText() == "run"
         cursor.insertText("run_copy")

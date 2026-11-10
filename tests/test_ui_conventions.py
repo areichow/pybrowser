@@ -184,3 +184,9 @@ def test_index_worker_does_not_swallow_base_exception():
     source = Path("pybrowser/indexing.py").read_text()
     assert "except BaseException" not in source
     assert "except Exception as exc" in source
+
+
+def test_duplicate_identifier_selection_occurs_after_occurrence_restoration():
+    source = Path("pybrowser/main_window.py").read_text()
+    method = source[source.index("    def _apply_structural_edit"):source.index("    def _select_location", source.index("    def _apply_structural_edit"))]
+    assert method.index("self._select_member_occurrence") < method.index("self._select_member_identifier()")

@@ -130,7 +130,7 @@ Qt object lifetime is a high-risk area on Windows.
 - Preserve selection and cursor across save, refresh, watcher events, and structural operations.
 - Unsaved state must be obvious and must block destructive navigation.
 - Duplicate definitions remain visible and diagnostically marked.
-- Duplicate Member should select the inserted occurrence and select its identifier for immediate rename.
+- Duplicate Member should select the inserted occurrence and select its identifier for immediate rename. A later general module reload preserves structural identity but is not required to preserve an ephemeral QTextCursor selection.
 - File View is the escape hatch for edits spanning structural boundaries.
 - Browser, File View, query, and history windows remain independent top-level windows.
 - Keyboard behavior is a first-class feature.

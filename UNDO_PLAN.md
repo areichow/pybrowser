@@ -223,3 +223,8 @@ The focused Duplicate Member GUI regression disables unrelated process-pool inde
 #### Revision 12.15 literal Document offset correction
 
 The focused Duplicate Member regression now compares the selected Member span with literal `Document.text`, not `Path.read_text()`. On Windows, universal-newline translation removes CR characters and makes later offsets appear smaller than the parser's correct CRLF-preserving offsets. A CRLF parser regression fixes this contract.
+
+
+#### Revision 12.16 duplicate rename-selection lifecycle
+
+The GUI regression now distinguishes durable structural selection from ephemeral editor selection. Duplicate Member must select the inserted occurrence and its identifier immediately. A subsequent general module reload must preserve the inserted occurrence, but the rename selection is explicitly reapplied before simulating typing.
