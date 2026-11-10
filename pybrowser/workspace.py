@@ -29,7 +29,11 @@ class Workspace(QObject):
     """Coordinates windows that operate on the same file/folder World."""
 
     file_changed = Signal(object, object)
+    # Full World replacement and module-membership changes are distinct from
+    # ordinary source content changes. Browsers must not rebuild a 3,000-module
+    # tree merely because one existing module was saved.
     world_changed = Signal(object)
+    module_set_changed = Signal(object)
     windows_changed = Signal()
     history_changed = Signal()
 
@@ -41,6 +45,7 @@ class Workspace(QObject):
         self.journal = None
         self.write_service = None
         self.source_store = None
+        self._effective_module_paths = frozenset()
 
     def set_world(self, world):
         self.world = world
@@ -58,7 +63,9 @@ class Workspace(QObject):
             self.journal, self.announce_file_changed, source_store=self.source_store,
             write_mode=settings.value("source/writeMode", WriteMode.AUTO_COMMIT.value, str),
         )
-        self.world_changed.emit(world)
+        effective = self.effective_world()
+        self._effective_module_paths = self._module_paths(effective)
+        self.world_changed.emit(effective)
         self.history_changed.emit()
 
     def _restore_active_overlays(self):
@@ -76,9 +83,21 @@ class Workspace(QObject):
                 transaction_id=transaction.transaction_id, restoring=True, notify=False,
             )
 
+    @staticmethod
+    def _module_paths(world):
+        return frozenset(entry.path.resolve() for entry in world.modules) if world else frozenset()
+
+    def _publish_source_change(self, path, origin):
+        path = Path(path).resolve()
+        self.file_changed.emit(path, origin)
+        effective = self.effective_world()
+        current_paths = self._module_paths(effective)
+        if current_paths != self._effective_module_paths:
+            self._effective_module_paths = current_paths
+            self.module_set_changed.emit(effective)
+
     def _overlay_changed(self, path):
-        self.file_changed.emit(Path(path).resolve(), None)
-        self.world_changed.emit(self.effective_world())
+        self._publish_source_change(path, None)
 
     def staged_paths(self):
         return self.source_store.staged_paths() if self.source_store else ()
@@ -132,10 +151,7 @@ class Workspace(QObject):
         return self.source_store.read_document(path)
 
     def announce_file_changed(self, path: Path, origin=None):
-        path = Path(path).resolve()
-        self.file_changed.emit(path, origin)
-        if path.suffix.casefold() == ".py":
-            self.world_changed.emit(self.effective_world())
+        self._publish_source_change(path, origin)
 
     @staticmethod
     def _valid_window(window):

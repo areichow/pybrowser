@@ -45,3 +45,11 @@ def test_cache_uses_visible_overlay_signature_and_virtual_file(tmp_path):
     visible = store.visible_signature(path)
     store.stage_bytes(path, b"A = 2\n", expected_visible_signature=visible)
     assert cache.get(path) is None
+
+
+def test_disk_cache_validation_uses_stat_without_hashing(tmp_path, monkeypatch):
+    path = tmp_path / "app.py"; path.write_bytes(b"VALUE = 1\n")
+    cache = ModuleIndexCache(); cache.put(path, ())
+    import pybrowser.world_source as world_source
+    monkeypatch.setattr(world_source, "stable_read", lambda _path: (_ for _ in ()).throw(AssertionError("hashed")))
+    assert cache.get(path) is not None

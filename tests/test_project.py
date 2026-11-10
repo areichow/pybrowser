@@ -27,3 +27,19 @@ def test_single_file_world(tmp_path):
     world = open_world(path)
     assert world.single_file
     assert world.modules[0].path == path.resolve()
+
+
+def test_discovery_prunes_excluded_directory_before_descent(tmp_path, monkeypatch):
+    (tmp_path / ".venv" / "deep").mkdir(parents=True)
+    (tmp_path / ".venv" / "deep" / "ignored.py").write_text("", encoding="utf-8")
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    import pybrowser.project as project
+    visited = []
+    original = project.os.walk
+    def recording(*args, **kwargs):
+        for directory, names, files in original(*args, **kwargs):
+            visited.append(Path(directory))
+            yield directory, names, files
+    monkeypatch.setattr(project.os, "walk", recording)
+    assert [entry.relative_path.as_posix() for entry in discover_modules(tmp_path)] == ["app.py"]
+    assert not any(".venv" in path.parts for path in visited)

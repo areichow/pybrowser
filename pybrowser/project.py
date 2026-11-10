@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import os
+
+from .performance import timed
 
 DEFAULT_EXCLUDES = frozenset({
     ".git", ".hg", ".svn", ".venv", "venv", "env", "__pycache__",
@@ -32,14 +35,30 @@ def dotted_module_name(root: Path, path: Path) -> str:
 
 
 def discover_modules(root: Path, excludes=DEFAULT_EXCLUDES) -> tuple[ModuleEntry, ...]:
+    """Discover Python modules without descending into ignored directory trees."""
     root = root.resolve()
     entries: list[ModuleEntry] = []
-    for path in root.rglob("*.py"):
-        relative = path.relative_to(root)
-        if any(part in excludes or part.startswith(".") and part not in {"."} for part in relative.parts[:-1]):
-            continue
-        entries.append(ModuleEntry(path, relative, dotted_module_name(root, path), path.name == "__init__.py"))
-    return tuple(sorted(entries, key=lambda item: tuple(part.casefold() for part in item.relative_path.parts)))
+    with timed("discover_modules", root=root):
+        for directory, names, files in os.walk(root, topdown=True):
+            names[:] = sorted(
+                (name for name in names
+                 if name not in excludes and not name.startswith(".")),
+                key=str.casefold,
+            )
+            base = Path(directory)
+            for name in files:
+                if not name.casefold().endswith(".py"):
+                    continue
+                path = (base / name).resolve()
+                relative = path.relative_to(root)
+                entries.append(ModuleEntry(
+                    path, relative, dotted_module_name(root, path),
+                    name.casefold() == "__init__.py",
+                ))
+    return tuple(sorted(
+        entries,
+        key=lambda item: tuple(part.casefold() for part in item.relative_path.parts),
+    ))
 
 
 def open_world(path: Path) -> World:

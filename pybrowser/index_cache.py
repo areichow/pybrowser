@@ -19,9 +19,14 @@ class ModuleIndexCache:
         self._items: dict[Path, CachedModule] = {}
 
     def signature(self, path: Path):
+        path = Path(path).resolve()
         if self.source_store is not None:
-            return self.source_store.visible_signature(path)
+            overlay = self.source_store.overlay(path)
+            if overlay is not None:
+                return overlay.signature
         stat = path.stat()
+        # Cache identity is intentionally cheap. Source writes and recovery still
+        # use stable SHA-256 signatures at every integrity boundary.
         return stat.st_mtime_ns, stat.st_size
 
     def set_source_store(self, source_store):

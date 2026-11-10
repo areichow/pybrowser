@@ -39,6 +39,7 @@ from .semantic import analyze_source
 from .semantic_queries import references_in_world
 from .diagnostic_aggregation import DiagnosticAggregation, decorate
 from .member_projection import MemberProjection, file_to_editor_offset, project_member, restore_member
+from .performance import log as profile_log, timed as profile_timed
 from .source_write_service import SaveRequest, SourceConflictError, SourcePostCommitError, WriteMode
 from .widgets.structural_history import StructuralHistoryWindow
 from .widgets.staged_changes import StagedChangesWindow
@@ -57,6 +58,7 @@ class MainWindow(QMainWindow):
         self.workspace.register(self, "browser")
         self.workspace.file_changed.connect(self._workspace_file_changed)
         self.workspace.world_changed.connect(self._workspace_world_changed)
+        self.workspace.module_set_changed.connect(self._workspace_module_set_changed)
         self.world: World | None = self.workspace.world
         self.child_windows = []
         self.module_entries: dict[str, ModuleEntry] = {}
@@ -73,6 +75,13 @@ class MainWindow(QMainWindow):
         self.index_signals.results.connect(self._index_results)
         self.index_signals.progress.connect(self._index_progress)
         self.index_signals.finished.connect(self._index_finished)
+        self.incremental_index_signals = IndexSignals()
+        self.incremental_index_signals.results.connect(self._incremental_index_results)
+        self.incremental_index_signals.finished.connect(self._incremental_index_finished)
+        self.incremental_index_generation = 0
+        self.incremental_index_paths = {}
+        self.changed_since_full_index = set()
+        self.module_stamps = {}
         self.typecheck_signals = TypeCheckSignals()
         self.typecheck_signals.finished.connect(self._typecheck_finished)
         self.typecheck_running = False
@@ -965,7 +974,9 @@ class MainWindow(QMainWindow):
 
 
     def _populate_module_tree(self):
+        started = __import__("time").perf_counter()
         self.loading = True
+        self.modules.setUpdatesEnabled(False)
         self.modules.clear()
         self.module_entries.clear()
         self.module_tree_items.clear()
@@ -1002,7 +1013,11 @@ class MainWindow(QMainWindow):
             self.module_entries[key] = entry
             self.module_tree_items[key] = leaf
         self.modules.expandAll()
+        self.modules.setUpdatesEnabled(True)
         self.loading = False
+        self._capture_module_stamps()
+        profile_log("module_tree_rebuild", modules=len(self.world.modules),
+                    elapsed_ms=f"{(__import__('time').perf_counter() - started) * 1000:.1f}")
 
     def _capture_browser_selection(self):
         """Capture a stable Browser bookmark before any model/tree rebuild."""
@@ -1074,6 +1089,14 @@ class MainWindow(QMainWindow):
     def _workspace_world_changed(self, world):
         if self.opening_world or world is None:
             return
+        self._apply_module_set(world)
+
+    def _workspace_module_set_changed(self, world):
+        if self.opening_world or world is None:
+            return
+        self._apply_module_set(world)
+
+    def _apply_module_set(self, world):
         bookmark = self._capture_browser_selection()
         self.world = world
         self.index_cache.retain({entry.path for entry in world.modules})
@@ -1081,22 +1104,66 @@ class MainWindow(QMainWindow):
         self._start_background_index()
         self._restore_browser_bookmark(bookmark)
 
+    @staticmethod
+    def _path_stamp(path):
+        try:
+            stat = Path(path).stat()
+            return stat.st_mtime_ns, stat.st_size
+        except OSError:
+            return None
+
+    def _capture_module_stamps(self):
+        if not self.world:
+            self.module_stamps = {}
+            return
+        self.module_stamps = {
+            entry.path.resolve(): self._path_stamp(entry.path)
+            for entry in self.world.modules
+        }
+
     def _refresh_world(self):
         if not self.world or self.world.single_file:
             return
+        started = __import__("time").perf_counter()
         bookmark = self._capture_browser_selection()
         try:
             physical_world = open_world(self.world.root)
+            old_paths = {entry.path.resolve() for entry in self.workspace.world.modules}
+            new_paths = {entry.path.resolve() for entry in physical_world.modules}
             self.workspace.world = physical_world
-            self.world = self.workspace.effective_world()
-            self.index_cache.retain({entry.path for entry in self.world.modules})
-            self._populate_module_tree()
-            self._watch_world()
-            self._start_background_index()
-            self._restore_browser_bookmark(bookmark)
+            effective = self.workspace.effective_world()
+            effective_paths = {entry.path.resolve() for entry in effective.modules}
+            prior_effective = {entry.path.resolve() for entry in self.world.modules}
+            if effective_paths != prior_effective or old_paths != new_paths:
+                self.workspace._effective_module_paths = frozenset(effective_paths)
+                self.workspace.module_set_changed.emit(effective)
+                self._watch_world()
+                profile_log("world_refresh_membership", modules=len(effective.modules),
+                            elapsed_ms=f"{(__import__('time').perf_counter() - started) * 1000:.1f}")
+                return
+            changed = []
+            for entry in effective.modules:
+                path = entry.path.resolve()
+                stamp = self._path_stamp(path)
+                if stamp != self.module_stamps.get(path):
+                    self.module_stamps[path] = stamp
+                    changed.append(path)
+            for path in changed:
+                if self.doc and path == self.doc.path and not self.editor.document().isModified():
+                    location = (self.member.scope, self.member.category, self.member.label) if self.member else None
+                    self._open_module(path, location, fallback_row=self.members.currentRow())
+                else:
+                    self.index_cache.invalidate(path)
+                    self._schedule_module_index(path)
+            profile_log("world_refresh_content_only", modules=len(effective.modules),
+                        changed=len(changed),
+                        elapsed_ms=f"{(__import__('time').perf_counter() - started) * 1000:.1f}")
+            if bookmark and self.doc and self.doc.path == bookmark["path"]:
+                cursor = self.editor.textCursor()
+                cursor.setPosition(min(bookmark["cursor"], len(self.editor.toPlainText())))
+                self.editor.setTextCursor(cursor)
         except OSError as exc:
             self.statusBar().showMessage(str(exc), 5000)
-
 
     def _file_changed(self, path):
         if self.doc and Path(path) == self.doc.path and not self.editor.document().isModified():
@@ -1106,6 +1173,7 @@ class MainWindow(QMainWindow):
 
     def _start_background_index(self):
         self.index_cancelled.set()
+        self.changed_since_full_index.clear()
         self.index_cancelled = Event()
         self.index_generation += 1
         generation = self.index_generation
@@ -1115,6 +1183,7 @@ class MainWindow(QMainWindow):
         if not modules:
             self.statusBar().showMessage(f"World ready: {len(self.world.modules)} module(s)", 4000)
             return
+        profile_log("full_index_submit", modules=len(modules), generation=generation)
         task = IndexWorldTask(modules, generation, self.index_signals, self.index_cancelled, source_map=self.workspace.source_store.source_map())
         self.thread_pool.start(task)
         self.busy_indicator.begin("Source model indexing", len(modules))
@@ -1129,6 +1198,8 @@ class MainWindow(QMainWindow):
         self.modules.setUpdatesEnabled(False)
         try:
             for result in results:
+                if result.path.resolve() in self.changed_since_full_index:
+                    continue
                 self.index_cache.put(result.path, result.scopes, result.error)
                 if result.semantic is not None:
                     self.semantic_modules[result.path.resolve()] = result.semantic
@@ -1139,6 +1210,41 @@ class MainWindow(QMainWindow):
             self.modules.setUpdatesEnabled(True)
             self.modules.viewport().update()
 
+
+    def _schedule_module_index(self, path):
+        path = Path(path).resolve()
+        entry = next((item for item in self.workspace.effective_world().modules
+                      if item.path.resolve() == path), None)
+        if entry is None:
+            return
+        self.changed_since_full_index.add(path)
+        self.incremental_index_generation += 1
+        generation = self.incremental_index_generation
+        self.incremental_index_paths[generation] = path
+        source_map = self.workspace.source_store.source_map((path,))
+        task = IndexWorldTask((entry,), generation, self.incremental_index_signals,
+                              Event(), max_workers=1, source_map=source_map)
+        profile_log("module_index_submit", path=path, generation=generation)
+        self.thread_pool.start(task)
+
+    def _incremental_index_results(self, results):
+        for result in results or ():
+            expected = self.incremental_index_paths.get(result.generation)
+            if expected is None or result.path.resolve() != expected:
+                continue
+            self.index_cache.put(result.path, result.scopes, result.error)
+            if result.semantic is not None:
+                self.semantic_modules[result.path.resolve()] = result.semantic
+            else:
+                self.semantic_modules.pop(result.path.resolve(), None)
+            self._update_module_tree_item(result.path)
+            profile_log("module_index_result", path=result.path,
+                        generation=result.generation)
+
+    def _incremental_index_finished(self, generation):
+        path = self.incremental_index_paths.pop(generation, None)
+        if path is not None:
+            self.statusBar().showMessage(f"Updated source model: {path.name}", 2500)
 
     def _index_progress(self, generation, completed, total):
         if generation == self.index_generation:
@@ -1489,21 +1595,22 @@ class MainWindow(QMainWindow):
         self.child_windows.append(window)
 
     def _workspace_file_changed(self, path, origin):
+        path = Path(path).resolve()
+        self.changed_since_full_index.add(path)
+        self.module_stamps[path] = self._path_stamp(path)
         if origin is self:
             return
-        path = Path(path).resolve()
         self.index_cache.invalidate(path)
         if self.doc and path == self.doc.path:
             if self.editor.document().isModified():
-                self.statusBar().showMessage("File changed in another workspace window; save is blocked until you reload", 7000)
+                self.statusBar().showMessage(
+                    "File changed in another workspace window; save is blocked until you reload", 7000)
                 return
             location = (self.member.scope, self.member.category, self.member.label) if self.member else None
-            self._open_module(path, location)
+            self._open_module(path, location, fallback_row=self.members.currentRow())
+            self._update_module_tree_item(path)
         else:
-            # Re-index changed modules even when another module is selected so
-            # Ctrl+B, Ctrl+T, Implementers, and Senders see new definitions.
-            self._start_background_index()
-
+            self._schedule_module_index(path)
 
     def _members_context_menu(self, position):
         member = self.member
@@ -1870,6 +1977,7 @@ class MainWindow(QMainWindow):
     def save(self):
         if not self.doc or not self.member:
             return
+        save_started = __import__("time").perf_counter()
         bookmark = self._capture_browser_selection()
         path = self.doc.path
         scope = self.member.scope
@@ -1889,12 +1997,17 @@ class MainWindow(QMainWindow):
             self.setWindowModified(False)
             self.index_cache.invalidate(path)
             self._open_module(path, (scope, category, ""), fallback_row=row)
+            self._update_module_tree_item(path)
+            self.module_stamps[path.resolve()] = self._path_stamp(path)
             if bookmark and self.member:
                 cursor = self.editor.textCursor()
                 cursor.setPosition(min(bookmark["cursor"], len(self.editor.toPlainText())))
                 self.editor.setTextCursor(cursor)
             self._update_modified_indicator(False)
             self.statusBar().showMessage("Staged in Manual Commit mode" if self.workspace.staged_paths() else "Saved to disk", 5000)
+            profile_log("save_member", path=path,
+                        mode=self.workspace.write_service.write_mode.value,
+                        elapsed_ms=f"{(__import__('time').perf_counter() - save_started) * 1000:.1f}")
             if result.warnings:
                 QMessageBox.warning(self, "Committed with warning", "\n".join(result.warnings))
         except ParseError as exc:

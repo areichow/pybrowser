@@ -35,19 +35,20 @@ def test_workspace_restores_durable_overlay_after_restart(tmp_path):
         settings.sync()
 
 
-def test_overlay_notifications_publish_effective_world_once(tmp_path):
+def test_overlay_notifications_publish_content_change_without_world_rebuild(tmp_path):
     from pybrowser.source_write_service import SaveRequest, WriteMode
     path = tmp_path / "app.py"; path.write_bytes(b"A = 1\n")
     world = open_world(path)
     workspace = Workspace(); workspace.set_world(world); workspace.set_write_mode(WriteMode.MANUAL_COMMIT)
-    file_events = []; world_events = []
+    file_events = []; world_events = []; module_events = []
     workspace.file_changed.connect(lambda changed, origin: file_events.append((changed, origin)))
     workspace.world_changed.connect(lambda current: world_events.append(current))
+    workspace.module_set_changed.connect(lambda current: module_events.append(current))
     origin = object()
     workspace.write_service.save_document(SaveRequest(workspace.read_document(path), "A = 2\n", "save_file", "stage", origin=origin))
     assert file_events == [(path.resolve(), origin)]
-    assert len(world_events) == 1
-    assert world_events[0].modules[0].path == path.resolve()
+    assert world_events == []
+    assert module_events == []
 
 
 def test_staged_commit_and_abandon_block_unsaved_affected_windows(tmp_path, monkeypatch):
@@ -61,3 +62,15 @@ def test_staged_commit_and_abandon_block_unsaved_affected_windows(tmp_path, monk
     monkeypatch.setattr(workspace, "activate_window", lambda window: None)
     with pytest.raises(WorkspaceStagingError): workspace.commit_staged_path(path)
     with pytest.raises(WorkspaceStagingError): workspace.discard_staged_path(path)
+
+
+def test_virtual_overlay_publishes_module_set_change(tmp_path):
+    from pybrowser.source_write_service import WriteMode
+    world = open_world(tmp_path)
+    workspace = Workspace(); workspace.set_world(world); workspace.set_write_mode(WriteMode.MANUAL_COMMIT)
+    events = []
+    workspace.module_set_changed.connect(events.append)
+    path = tmp_path / "virtual.py"
+    workspace.write_service.create_file(path, b"VALUE = 1\n")
+    assert len(events) == 1
+    assert path.resolve() in {entry.path.resolve() for entry in events[0].modules}

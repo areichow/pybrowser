@@ -40,7 +40,9 @@ def test_world_refresh_preserves_complete_browser_bookmark():
     source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
     refresh = source[source.index("    def _refresh_world"):source.index("    def _file_changed", source.index("    def _refresh_world"))]
     assert "_capture_browser_selection()" in refresh
-    assert "_restore_browser_bookmark(bookmark)" in refresh
+    assert "effective_paths != prior_effective" in refresh
+    assert "_schedule_module_index(path)" in refresh
+    assert "_populate_module_tree()" not in refresh
 
 
 def test_programmatic_module_selection_blocks_reset_signal():
@@ -224,7 +226,8 @@ def test_manual_stage_publication_does_not_reload_origin_mid_save():
     workspace = Path("pybrowser/workspace.py").read_text(encoding="utf-8")
     assert "notify=False" in service
     assert "self.notify(path, request.origin)" in service
-    assert "self.world_changed.emit(self.effective_world())" in workspace
+    assert "self._publish_source_change(path, origin)" in workspace
+    assert "self.module_set_changed.emit(effective)" in workspace
 
 
 def test_gui_regression_isolates_manual_commit_setting_and_modal_exec():
@@ -298,3 +301,28 @@ def test_window_menu_suppresses_shutdown_and_deletion_races():
         "    def disconnect_rebuild", source.index("    def rebuild"))]
     assert "QApplication.closingDown()" in rebuild
     assert "except RuntimeError" in rebuild
+
+
+def test_existing_source_change_does_not_restart_full_world_index():
+    workspace = Path("pybrowser/workspace.py").read_text(encoding="utf-8")
+    main = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    announce = workspace[workspace.index("    def announce_file_changed"):workspace.index(
+        "    @staticmethod", workspace.index("    def announce_file_changed"))]
+    assert "_publish_source_change" in announce
+    assert "world_changed.emit" not in announce
+    handler = main[main.index("    def _workspace_file_changed"):main.index(
+        "    def _members_context_menu", main.index("    def _workspace_file_changed"))]
+    assert "_schedule_module_index(path)" in handler
+    assert "_start_background_index()" not in handler
+    assert "_populate_module_tree()" not in handler
+
+
+def test_performance_profile_covers_large_world_hot_paths():
+    performance = Path("pybrowser/performance.py").read_text(encoding="utf-8")
+    main = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    project = Path("pybrowser/project.py").read_text(encoding="utf-8")
+    assert "PYBROWSER_PROFILE" in performance
+    for event in ("module_tree_rebuild", "full_index_submit", "module_index_submit",
+                  "module_index_result", "world_refresh_content_only", "save_member"):
+        assert event in main
+    assert 'timed("discover_modules"' in project

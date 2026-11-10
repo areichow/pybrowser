@@ -278,3 +278,8 @@ Schema 7 adds `staged_commit_batches` and `staged_commit_files`. Commit Selected
 ###### Revision 12.23.1 Qt top-level window registry hardening
 
 The Workspace window registry now compacts invalid Shiboken wrappers before invoking any Qt method. `destroyed(QObject*)` cleanup no longer relies on Python wrapper identity, which is not guaranteed to match the originally registered wrapper. `open_windows()`, activation, registration, unregistration, and active-Browser selection all validate wrappers with `shiboken6.isValid()`. Window-menu rebuilds suppress shutdown work and defensively tolerate a deletion race while queued registry signals unwind. GUI regressions close and delete Staged Changes, rebuild every Window menu, reopen Staged Changes, and delete Browser wrappers without terminal tracebacks.
+
+
+##### Revision 12.24 large-World content-only refresh
+
+Workspace source-content notifications are separated from module-membership changes. Saving an existing module no longer emits a World replacement, rebuilds the module tree, cancels full indexing, or schedules unrelated modules. Other Browsers reload the changed current module or queue only the changed path through a one-module background index task. Full-index results for paths changed after submission are ignored so stale work cannot overwrite a newer incremental result. Directory watcher refreshes use pruned discovery and compare membership first; unchanged membership performs a cheap stat scan and schedules only changed modules. `ModuleIndexCache` uses mtime/size for physical cache identity and overlay SHA-256 for in-memory staged source, while source writes and recovery retain stable SHA-256 checks. `PYBROWSER_PROFILE=1` emits measured discovery, tree, refresh, indexing, and save timings.
