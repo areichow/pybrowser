@@ -32,3 +32,16 @@ def test_explicit_invalidate_removes_cached_module(tmp_path):
     assert cache.get(path) is not None
     cache.invalidate(path)
     assert cache.get(path) is None
+
+
+def test_cache_uses_visible_overlay_signature_and_virtual_file(tmp_path):
+    from pybrowser.world_source import WorldSourceStore
+    path = tmp_path / "virtual.py"
+    store = WorldSourceStore(tmp_path)
+    store.stage_bytes(path, b"A = 1\n")
+    cache = ModuleIndexCache(store)
+    cache.put(path, ())
+    assert cache.get(path) is not None
+    visible = store.visible_signature(path)
+    store.stage_bytes(path, b"A = 2\n", expected_visible_signature=visible)
+    assert cache.get(path) is None

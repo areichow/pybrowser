@@ -53,6 +53,7 @@ class Document:
     final_newline: bool
     signature: tuple[int, int, str]
     scopes: tuple[Scope, ...]
+    disk_signature: tuple[int, int, str] | None = None
 
     def source(self, member: Member) -> str:
         return self.text[member.span.start:member.span.end]

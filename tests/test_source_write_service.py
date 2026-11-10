@@ -206,3 +206,33 @@ def test_multi_file_validation_or_conflict_prevents_every_write(tmp_path):
         ), "multi_file_save", "invalid"))
     assert first.read_bytes() == b"A = 1\n" and second.read_bytes() == b"B = 1\n"
     assert journal.transactions() == ()
+
+
+def test_overlay_document_commit_checks_physical_baseline(tmp_path):
+    from pybrowser.world_source import WorldSourceStore
+    world, journal, _service, notifications = service_for(tmp_path)
+    path = world / "app.py"; path.write_bytes(b"A = 1\n")
+    store = WorldSourceStore(world, journal.locks)
+    disk_document = read_document(path)
+    store.stage_bytes(path, b"A = 2\n", expected_visible_signature=disk_document.signature)
+    staged_document = store.read_document(path)
+    service = SourceWriteService(journal, source_store=store)
+    result = service.save_document(SaveRequest(staged_document, "A = 3\n", "save_file", "commit overlay"))
+    assert path.read_bytes() == b"A = 3\n"
+    assert result.document.text == "A = 3\n"
+
+
+def test_overlay_document_commit_rejects_external_disk_change(tmp_path):
+    from pybrowser.world_source import WorldSourceStore
+    world, journal, _service, notifications = service_for(tmp_path)
+    path = world / "app.py"; path.write_bytes(b"A = 1\n")
+    store = WorldSourceStore(world, journal.locks)
+    disk_document = read_document(path)
+    store.stage_bytes(path, b"A = 2\n", expected_visible_signature=disk_document.signature)
+    staged_document = store.read_document(path)
+    path.write_bytes(b"EXTERNAL = 9\n")
+    service = SourceWriteService(journal, source_store=store)
+    with pytest.raises(SourceConflictError):
+        service.save_document(SaveRequest(staged_document, "A = 3\n", "save_file", "commit overlay"))
+    assert path.read_bytes() == b"EXTERNAL = 9\n"
+    assert journal.transactions() == ()

@@ -110,7 +110,7 @@ class SourceWriteService:
     def _read_document(self, path):
         return self.source_store.read_document(path) if self.source_store else read_document(path)
 
-    def _post_commit_one(self, path, transaction, origin, candidate, encoding, newline):
+    def _post_commit_one(self, path, transaction, file_index, origin, candidate, encoding, newline):
         warnings = []
         if self.source_store:
             self.source_store.discard(path)
@@ -121,7 +121,7 @@ class SourceWriteService:
             transaction = self.journal.mark_post_commit_error(transaction, message)
             try: signature = file_signature(path)
             except OSError:
-                signature = (0, len(candidate.encode(encoding)), transaction.manifest["files"][0].get("after_sha256", ""))
+                signature = (0, len(candidate.encode(encoding)), transaction.manifest["files"][file_index].get("after_sha256", ""))
             refreshed = Document(path, candidate, encoding, newline,
                                  candidate.endswith(("\n", "\r")), signature, ())
             warnings.append(message)
@@ -151,7 +151,13 @@ class SourceWriteService:
                     try: stable = stable_read(path)
                     except (FileNotFoundError, OSError) as exc:
                         raise SourceConflictError(f"The file could not be read stably: {exc}") from exc
-                    if stable.signature != item.document.signature:
+                    if self.source_store and self.source_store.has_overlay(path):
+                        if self.source_store.visible_signature(path) != item.document.signature:
+                            raise SourceConflictError(f"{path} changed in the staged World. Reload it before saving.")
+                        expected_disk = item.document.disk_signature
+                    else:
+                        expected_disk = item.document.disk_signature or item.document.signature
+                    if stable.signature != expected_disk:
                         raise SourceConflictError(f"{path} changed on disk. Reload it before saving.")
                     prepared.append((item, path, stable, item.text.encode(item.document.encoding)))
                 specs = ({
@@ -191,9 +197,9 @@ class SourceWriteService:
             ) from exc
         documents = []
         warnings = list(maintenance_warnings)
-        for item, path, _stable, _after in prepared:
+        for file_index, (item, path, _stable, _after) in enumerate(prepared):
             refreshed, transaction, item_warnings = self._post_commit_one(
-                path, transaction, request.origin or item.origin, item.text,
+                path, transaction, file_index, request.origin or item.origin, item.text,
                 item.document.encoding, item.document.newline,
             )
             documents.append(refreshed); warnings.extend(item_warnings)
@@ -239,5 +245,5 @@ class SourceWriteService:
                 RecoveryTransaction(directory, manifest)) from exc
         candidate = data.decode(encoding)
         refreshed, transaction, warnings = self._post_commit_one(
-            path, transaction, origin, candidate, encoding, newline)
+            path, transaction, 0, origin, candidate, encoding, newline)
         return SaveResult(refreshed, transaction, (path,), tuple(maintenance_warnings) + warnings)

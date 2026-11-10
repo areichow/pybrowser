@@ -219,11 +219,11 @@ def build_index(path: Path, text: str) -> tuple[Scope, ...]:
     module_scope = Scope("<module>", _add_category_members(_group_imports(module_items, text)))
     return (module_scope, *class_scopes)
 
-def document_from_stable(path: Path, stable) -> Document:
+def document_from_stable(path: Path, stable, disk_signature=None) -> Document:
     path = Path(path).resolve()
     encoding, _ = tokenize.detect_encoding(io.BytesIO(stable.data).readline)
     text = stable.data.decode(encoding)
-    return Document(path, text, encoding, "\r\n" if "\r\n" in text else "\n", text.endswith(("\n", "\r")), stable.signature, build_index(path, text))
+    return Document(path, text, encoding, "\r\n" if "\r\n" in text else "\n", text.endswith(("\n", "\r")), stable.signature, build_index(path, text), disk_signature if disk_signature is not None else stable.signature)
 
 def read_document(path: Path) -> Document:
     path = Path(path).resolve()

@@ -8,19 +8,25 @@ from .model import Scope
 
 @dataclass(frozen=True, slots=True)
 class CachedModule:
-    signature: tuple[int, int]
+    signature: tuple[int, int, str] | tuple[int, int]
     scopes: tuple[Scope, ...] | None
     error: str | None = None
 
 
 class ModuleIndexCache:
-    def __init__(self) -> None:
+    def __init__(self, source_store=None) -> None:
+        self.source_store = source_store
         self._items: dict[Path, CachedModule] = {}
 
-    @staticmethod
-    def signature(path: Path) -> tuple[int, int]:
+    def signature(self, path: Path):
+        if self.source_store is not None:
+            return self.source_store.visible_signature(path)
         stat = path.stat()
         return stat.st_mtime_ns, stat.st_size
+
+    def set_source_store(self, source_store):
+        self.source_store = source_store
+        self.clear()
 
     def put(self, path: Path, scopes: tuple[Scope, ...] | None, error: str | None = None) -> None:
         path = path.resolve()

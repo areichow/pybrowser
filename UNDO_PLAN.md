@@ -243,3 +243,8 @@ Recovery hash and interrupted-history tests now construct and verify exact bytes
 ##### Revision 12.20 overlay-capable source and multi-file commit foundation
 
 Added `WorldSourceStore` as the Workspace-owned source read boundary. Browser and File View document loads, editable queries, Implementers, Senders, World search, references, and process-based indexing can consume overlay bytes while Auto-Commit behavior remains unchanged. `SourceWriteService.save_documents()` now validates every candidate, acquires all path locks in canonical order, records one multi-file recovery transaction, replaces each source, and rolls back earlier replacements in reverse order if a later replacement fails. Manual staging, commit UI, quit disposition, and durable overlay restoration remain subsequent revisions.
+
+
+###### Revision 12.20.1 overlay identity and effective-World hardening
+
+Separated visible overlay signatures from retained physical disk signatures so repeated staged edits can detect stale editors without losing the original disk conflict baseline. Overlay replacement is guarded under the shared path lock. Virtual staged Python files are merged into the Workspace effective World for module discovery, indexing, queries, search, and quick-open. ModuleIndexCache now keys entries by the visible source signature, including virtual SHA-256 signatures. Multi-file fallback reparsing uses the corresponding file manifest hash rather than file zero. Durable journal transactions and Manual Commit UI remain Revision 12.21 and later.

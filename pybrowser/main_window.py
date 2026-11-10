@@ -991,7 +991,9 @@ class MainWindow(QMainWindow):
         self.index_cancelled = Event()
         self.index_generation += 1
         generation = self.index_generation
-        modules = tuple(entry for entry in self.world.modules if self.index_cache.get(entry.path) is None)
+        effective_world = self.workspace.effective_world()
+        self.world = effective_world
+        modules = tuple(entry for entry in effective_world.modules if self.index_cache.get(entry.path) is None)
         if not modules:
             self.statusBar().showMessage(f"World ready: {len(self.world.modules)} module(s)", 4000)
             return
@@ -1199,7 +1201,7 @@ class MainWindow(QMainWindow):
             return
         class ModuleChoice:
             def __init__(self, entry): self.entry = entry; self.display = f"{entry.dotted_name}  |  {entry.relative_path}"
-        dialog = QuickDialog("Quick Open Module", [ModuleChoice(entry) for entry in self.world.modules], self)
+        dialog = QuickDialog("Quick Open Module", [ModuleChoice(entry) for entry in self.workspace.effective_world().modules], self)
         if dialog.exec():
             choice = dialog.selected_entry()
             if choice and self._confirm_discard(): self._select_module_path(choice.entry.path)
@@ -1487,7 +1489,8 @@ class MainWindow(QMainWindow):
         task_id = self.work_sequence
         self.active_work[task_id] = (operation, argument)
         self.busy_indicator.begin(f"Source model working: {operation.replace('_', ' ')}")
-        task = WorldQueryTask(task_id, operation, self.world, argument, self.work_signals, self.workspace.source_store.source_map())
+        effective_world = self.workspace.effective_world()
+        task = WorldQueryTask(task_id, operation, effective_world, argument, self.work_signals, self.workspace.source_store.source_map())
         self.thread_pool.start(task)
 
     def _work_started(self, task_id, label):
