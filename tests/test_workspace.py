@@ -74,3 +74,28 @@ def test_virtual_overlay_publishes_module_set_change(tmp_path):
     workspace.write_service.create_file(path, b"VALUE = 1\n")
     assert len(events) == 1
     assert path.resolve() in {entry.path.resolve() for entry in events[0].modules}
+
+
+def test_existing_module_notification_does_not_rebuild_effective_world(tmp_path, monkeypatch):
+    path = tmp_path / "app.py"; path.write_bytes(b"A = 1\n")
+    workspace = Workspace(); workspace.set_world(open_world(tmp_path))
+    monkeypatch.setattr(workspace, "effective_world", lambda: (_ for _ in ()).throw(
+        AssertionError("existing content change rebuilt effective World")))
+    events = []
+    workspace.file_changed.connect(lambda changed, origin: events.append((changed, origin)))
+    origin = object()
+    workspace.announce_file_changed(path, origin)
+    assert events == [(path.resolve(), origin)]
+
+
+def test_discarded_virtual_module_still_publishes_membership_change(tmp_path):
+    from pybrowser.source_write_service import WriteMode
+    workspace = Workspace(); workspace.set_world(open_world(tmp_path))
+    workspace.set_write_mode(WriteMode.MANUAL_COMMIT)
+    path = tmp_path / "virtual.py"
+    workspace.write_service.create_file(path, b"VALUE = 1\n")
+    events = []
+    workspace.module_set_changed.connect(events.append)
+    workspace.write_service.discard_staged(path)
+    assert len(events) == 1
+    assert path.resolve() not in {item.path.resolve() for item in events[0].modules}

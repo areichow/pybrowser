@@ -2074,8 +2074,13 @@ class MainWindow(QMainWindow):
         row = self.members.currentRow()
         restored_source = restore_member(self.member_projection, self.editor.toPlainText())
         candidate = replacement(self.doc, self.member, restored_source)
-        prepared_scopes = rebase_member_document(
-            self.doc, self.member, restored_source, candidate
+        prepared_scopes, fast_path_reason = rebase_member_document(
+            self.doc, self.member, restored_source, candidate, with_reason=True
+        )
+        profile_log(
+            "save_structure_path", path=path,
+            mode="rebased" if prepared_scopes is not None else "full_reparse",
+            reason=fast_path_reason or "callable_suite_only",
         )
         import time
         self.suppress_directory_refresh_until = time.monotonic() + 10.0

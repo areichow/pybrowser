@@ -73,3 +73,87 @@ def test_header_change_refuses_body_only_rebase():
     restored = "def renamed(value):\n    return value\n"
     assert rebase_member_document(document, member, restored,
                                   replacement(document, member, restored)) is None
+
+
+def test_ast_shape_fast_path_accepts_decorated_multiline_method_body_change():
+    from pybrowser.parser import rebase_member_document
+    text = """class App:\n    @decorator(flag=True)\n    async def run(\n        self,\n        value: list[str],\n    ) -> str:\n        return value[0]\n"""
+    scopes = build_index(Path("x.py"), text)
+    document = Document(Path("x.py"), text, "utf-8", "\n", True,
+                        (0, 0, ""), scopes)
+    scope = next(item for item in scopes if item.name == "App")
+    member = scope.members[0]
+    restored = """    @decorator(flag=True)\n    async def run(\n        self,\n        value: list[str],\n    ) -> str:\n        answer = value[0]\n        return answer\n"""
+    candidate = replacement(document, member, restored)
+    rebased, reason = rebase_member_document(
+        document, member, restored, candidate, with_reason=True)
+    assert rebased is not None
+    assert reason == ""
+
+
+def test_ast_shape_fast_path_reports_signature_rejection_reason():
+    from pybrowser.parser import rebase_member_document
+    text = "def run(value: int) -> int:\n    return value\n"
+    scopes = build_index(Path("x.py"), text)
+    document = Document(Path("x.py"), text, "utf-8", "\n", True,
+                        (0, 0, ""), scopes)
+    member = scopes[0].members[0]
+    restored = "def run(value: str) -> int:\n    return len(value)\n"
+    rebased, reason = rebase_member_document(
+        document, member, restored,
+        replacement(document, member, restored), with_reason=True)
+    assert rebased is None
+    assert reason == "callable declaration or decorators changed"
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_rebase_uses_exact_replacement_slice_when_editor_omits_final_newline(newline):
+    from pybrowser.parser import rebase_member_document
+    text = newline.join((
+        "class App:",
+        "    def first(self):",
+        "        self.do_pending_operations(model)",
+        "",
+        "    def second(self):",
+        "        self.clear_cache()",
+        "",
+    ))
+    scopes = build_index(Path("x.py"), text)
+    document = Document(Path("x.py"), text, "utf-8", newline, True,
+                        (0, 0, ""), scopes)
+    scope = next(item for item in scopes if item.name == "App")
+    first = scope.members[0]
+    # QPlainTextEdit.toPlainText() omits the Member span's terminating newline.
+    projected_edit = newline.join((
+        "    def first(self):",
+        "        print('test')",
+        "        self.do_pending_operations(model)",
+    ))
+    candidate = replacement(document, first, projected_edit)
+    rebased = rebase_member_document(document, first, projected_edit, candidate)
+    assert rebased is not None
+    updated = next(item for item in rebased if item.name == "App")
+    first_after, second_after = updated.members
+    assert candidate[first_after.span.start:first_after.span.end].endswith(newline)
+    assert candidate[second_after.span.start:second_after.span.end].lstrip().startswith("def second")
+    assert "self.do_pending_operations(model)" + newline + newline + "    def second" in candidate
+    validate(candidate, "x.py")
+
+
+def test_three_consecutive_fast_rebases_keep_member_boundaries_exact():
+    from pybrowser.parser import rebase_member_document
+    text = "class App:\n    def first(self):\n        return 1\n\n    def second(self):\n        return 2\n"
+    document = Document(Path("x.py"), text, "utf-8", "\n", True,
+                        (0, 0, ""), build_index(Path("x.py"), text))
+    for value in ("one", "one.one", ""):
+        scope = next(item for item in document.scopes if item.name == "App")
+        member = scope.members[0]
+        body = f"    def first(self):\n        print({value!r})\n        return 1" if value else "    def first(self):\n        return 1"
+        candidate = replacement(document, member, body)
+        scopes = rebase_member_document(document, member, body, candidate)
+        assert scopes is not None
+        document = Document(document.path, candidate, document.encoding,
+                            document.newline, True, document.signature, scopes)
+        validate(document.text, "x.py")
+        current = next(item for item in scopes if item.name == "App")
+        assert document.source(current.members[0]).endswith("\n")
+        assert document.source(current.members[1]).lstrip().startswith("def second")

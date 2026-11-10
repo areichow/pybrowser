@@ -248,43 +248,74 @@ def validate(text: str, filename: str) -> None:
         raise ParseError(exc.msg, exc.lineno, exc.offset) from exc
 
 
-def rebase_member_document(document: Document, member: Member, restored_source: str, candidate: str):
-    """Return scopes adjusted for a body-only Member save, or None if unsafe.
 
-    The fast path is deliberately limited to functions/methods whose complete
-    declaration header is byte-for-byte unchanged. Candidate validation still
-    occurs at the SourceWriteService boundary.
+def _callable_structure(source: str):
+    """Return a callable's AST with its suite removed, or a rejection reason.
+
+    AST comparison is deliberately used instead of comparing textual header
+    lines. It handles decorators, multiline signatures, annotations, async
+    functions, comments, and projected indentation without relying on where a
+    colon happens to appear in source text.
     """
+    import textwrap
+    try:
+        tree = ast.parse(textwrap.dedent(source), mode="exec", type_comments=True)
+    except SyntaxError as exc:
+        return None, f"standalone callable parse failed: {exc.msg}"
+    callables = [node for node in tree.body
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    if len(callables) != 1:
+        return None, f"expected one top-level callable, found {len(callables)}"
+    node = callables[0]
+    node.body = [ast.Pass()]
+    # Location fields are omitted by ast.dump(include_attributes=False).
+    return ast.dump(node, include_attributes=False), ""
+
+
+def rebase_member_document(document: Document, member: Member,
+                           restored_source: str, candidate: str,
+                           *, with_reason: bool = False):
+    """Adjust immutable spans for a callable suite-only save.
+
+    The complete candidate is still validated by SourceWriteService. This
+    helper accepts the fast path only when the callable's AST structure outside
+    its body is identical, so name, decorators, parameters, annotations, type
+    comments, async form, and return annotation cannot change unnoticed.
+    """
+    def rejected(reason):
+        return (None, reason) if with_reason else None
+
     if member.kind not in {Kind.FUNCTION, Kind.METHOD}:
-        return None
-
-    def header(source):
-        lines = source.splitlines(keepends=True)
-        depth = 0
-        values = []
-        saw_def = False
-        for line in lines:
-            values.append(line)
-            stripped = line.strip()
-            if stripped.startswith(("def ", "async def ")):
-                saw_def = True
-            if saw_def:
-                depth += line.count("(") + line.count("[") + line.count("{")
-                depth -= line.count(")") + line.count("]") + line.count("}")
-                if depth == 0 and stripped.endswith(":"):
-                    return "".join(values)
-        return None
-
+        return rejected(f"member kind is {member.kind.value}")
     old_source = document.source(member)
-    if header(old_source) != header(restored_source):
-        return None
-    old_length = member.span.end - member.span.start
-    char_delta = len(restored_source) - old_length
-    old_lines = old_source.count("\n")
-    new_lines = restored_source.count("\n")
-    line_delta = new_lines - old_lines
-    new_member_last = member.span.last + line_delta
+    # replacement() normalizes line endings, strips trailing newlines, and then
+    # restores the original Member's final newline contract. QPlainTextEdit's
+    # toPlainText() normally omits that final newline, so restored_source is not
+    # necessarily the exact byte-for-character slice inserted into candidate.
+    # Derive the inserted slice from the completed candidate itself.
+    unchanged_suffix_length = len(document.text) - member.span.end
+    new_member_end = len(candidate) - unchanged_suffix_length
+    if not (member.span.start <= new_member_end <= len(candidate)):
+        return rejected("candidate Member boundary is invalid")
+    candidate_source = candidate[member.span.start:new_member_end]
+    if candidate[:member.span.start] != document.text[:member.span.start]:
+        return rejected("candidate prefix outside Member changed")
+    if candidate[new_member_end:] != document.text[member.span.end:]:
+        return rejected("candidate suffix outside Member changed")
 
+    old_shape, reason = _callable_structure(old_source)
+    if old_shape is None:
+        return rejected("loaded " + reason)
+    new_shape, reason = _callable_structure(candidate_source)
+    if new_shape is None:
+        return rejected("edited " + reason)
+    if old_shape != new_shape:
+        return rejected("callable declaration or decorators changed")
+
+    old_length = member.span.end - member.span.start
+    char_delta = len(candidate_source) - old_length
+    line_delta = candidate_source.count("\n") - old_source.count("\n")
+    new_member_last = member.span.last + line_delta
     scopes = []
     for scope in document.scopes:
         members = []
@@ -299,4 +330,14 @@ def rebase_member_document(document: Document, member: Member, restored_source: 
             members.append(Member(item.scope, item.category, item.label, item.kind,
                                   span, item.synthetic, item.tooltip))
         scopes.append(Scope(scope.name, tuple(members), scope.parent))
-    return tuple(scopes)
+    result = tuple(scopes)
+    # Assert every rebased span is a valid candidate slice before trusting it.
+    for scope in result:
+        for item in scope.members:
+            if item.span.start < 0 or item.span.end > len(candidate) or item.span.start > item.span.end:
+                return rejected("rebased span falls outside candidate source")
+    edited = next((item for scope in result for item in scope.members
+                   if item.scope == member.scope and item.span.start == member.span.start), None)
+    if edited is None or candidate[edited.span.start:edited.span.end] != candidate_source:
+        return rejected("rebased edited Member does not match candidate slice")
+    return (result, "") if with_reason else result

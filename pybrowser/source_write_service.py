@@ -149,7 +149,12 @@ class SourceWriteService:
                                  candidate.endswith(("\n", "\r")), signature, ())
             warnings.append(message)
         if self.notify:
-            try: self.notify(path, origin)
+            try:
+                import time
+                notify_started = time.perf_counter()
+                self.notify(path, origin)
+                profile_log("save_workspace_notify", path=path,
+                            elapsed_ms=f"{(time.perf_counter() - notify_started) * 1000:.1f}")
             except Exception as exc:
                 message = f"Workspace notification failed: {exc}"
                 transaction = self.journal.mark_post_commit_error(transaction, message)
@@ -331,7 +336,11 @@ class SourceWriteService:
             profile_log("stage_fast_document", path=path)
         else:
             document = self.source_store.read_document(path)
-        if self.notify: self.notify(path, request.origin)
+        if self.notify:
+            notify_started = time.perf_counter()
+            self.notify(path, request.origin)
+            profile_log("stage_workspace_notify", path=path,
+                        elapsed_ms=f"{(time.perf_counter() - notify_started) * 1000:.1f}")
         profile_log("stage_reparse_notify", path=path,
                     elapsed_ms=f"{(time.perf_counter() - reparse_started) * 1000:.1f}")
         profile_log("stage_service_total", path=path,

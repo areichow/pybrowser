@@ -90,11 +90,23 @@ class Workspace(QObject):
     def _publish_source_change(self, path, origin):
         path = Path(path).resolve()
         self.file_changed.emit(path, origin)
-        effective = self.effective_world()
-        current_paths = self._module_paths(effective)
-        if current_paths != self._effective_module_paths:
-            self._effective_module_paths = current_paths
-            self.module_set_changed.emit(effective)
+        # Existing-module content changes cannot alter World membership. Avoid
+        # effective_world() here because resolving and sorting thousands of paths
+        # synchronously made every save wait on the complete World.
+        was_member = path in self._effective_module_paths
+        visible_now = path.exists() or (
+            self.source_store is not None and self.source_store.has_overlay(path)
+        )
+        membership_may_change = (
+            path.suffix.casefold() == ".py"
+            and ((not was_member and visible_now) or (was_member and not visible_now))
+        )
+        if membership_may_change:
+            effective = self.effective_world()
+            current_paths = self._module_paths(effective)
+            if current_paths != self._effective_module_paths:
+                self._effective_module_paths = current_paths
+                self.module_set_changed.emit(effective)
 
     def _overlay_changed(self, path):
         self._publish_source_change(path, None)

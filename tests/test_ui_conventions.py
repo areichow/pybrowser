@@ -368,3 +368,12 @@ def test_body_only_browser_save_supplies_prepared_scopes_and_pre_suppresses_watc
     assert "rebase_member_document" in save
     assert "prepared_scopes=prepared_scopes" in save
     assert save.index("suppress_directory_refresh_until") < save.index("save_document(")
+
+
+def test_save_profiles_fast_path_acceptance_or_rejection_reason():
+    source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    save = source[source.index("    def save(self):"):source.index(
+        "    def _highlight_error", source.index("    def save(self):"))]
+    assert '"save_structure_path"' in save
+    assert 'mode="rebased" if prepared_scopes is not None else "full_reparse"' in save
+    assert "with_reason=True" in save

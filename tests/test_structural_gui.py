@@ -119,3 +119,49 @@ def test_duplicate_then_rename_changes_only_inserted_method(tmp_path, app, monke
         window.deleteLater()
         app.sendPostedEvents()
         app.processEvents()
+
+@pytest.mark.parametrize("write_mode", [WriteMode.AUTO_COMMIT, WriteMode.MANUAL_COMMIT],
+                         ids=["auto-commit", "manual-commit"])
+def test_repeated_member_saves_keep_following_member_boundary(
+        tmp_path, app, monkeypatch, no_modal_dialogs, auto_commit_setting, write_mode):
+    monkeypatch.setattr(MainWindow, "_start_background_index", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_watch_world", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_watch_current_file", lambda self: None)
+    path = tmp_path / "app.py"
+    path.write_bytes(
+        b"class App:\n"
+        b"    def first(self, model):\n"
+        b"        self.do_pending_operations(model)\n\n"
+        b"    def second(self):\n"
+        b"        self.clear_cache()\n"
+    )
+    workspace = Workspace()
+    window = MainWindow(workspace=workspace)
+    try:
+        window.open(path); app.processEvents()
+        workspace.set_write_mode(write_mode)
+        _select_member(window, "App", "first")
+        for value in ('print("24.4 test 1")', 'print("24.4 test 1.1")', None):
+            lines = ["def first(self, model):"]
+            if value:
+                lines.append("    " + value)
+            lines.append("    self.do_pending_operations(model)")
+            window.editor.setPlainText("\n".join(lines))
+            window.editor.document().setModified(True)
+            window.save(); app.processEvents()
+            assert not window.editor.document().isModified()
+            assert len(window.doc.scopes) >= 2
+            scope = next(item for item in window.doc.scopes if item.name == "App")
+            assert [item.label.split("  (", 1)[0] for item in scope.members] == ["first", "second"]
+            assert window.doc.source(scope.members[0]).endswith("\n")
+            assert window.doc.source(scope.members[1]).lstrip().startswith("def second")
+            assert "self.do_pending_operations(model)\n\n    def second" in window.doc.text
+            __import__("ast").parse(window.doc.text)
+        if write_mode == WriteMode.AUTO_COMMIT:
+            assert path.read_bytes() == window.doc.text.encode("utf-8")
+        else:
+            assert path.read_bytes().startswith(b"class App:\n")
+            assert workspace.source_store.read_document(path).text == window.doc.text
+    finally:
+        workspace.unregister(window, emit=False)
+        window.close(); window.deleteLater(); app.sendPostedEvents(); app.processEvents()
