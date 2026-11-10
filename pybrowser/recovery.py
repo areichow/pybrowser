@@ -21,7 +21,7 @@ except ImportError:
     QStandardPaths = None
 
 FORMAT_VERSION = 3
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 class RecoverySchemaError(RuntimeError):
     pass
@@ -201,6 +201,35 @@ class StagedCompletionResult:
     transactions: tuple[RecoveryTransaction, ...]
     warnings: tuple[str, ...] = ()
 
+@dataclass(frozen=True, slots=True)
+class StagedWriteResult:
+    transaction: RecoveryTransaction
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class StagedCommitFile:
+    batch_id: str
+    file_index: int
+    path: Path
+    transaction_id: str
+    progress: str
+    before_exists: bool
+    after_exists: bool
+    before_sha256: str | None
+    after_sha256: str | None
+    mode: int | None
+
+@dataclass(frozen=True, slots=True)
+class StagedCommitBatch:
+    batch_id: str
+    status: str
+    started_at: str
+    completed_at: str | None
+    recovered_at: str | None
+    reviewed_at: str | None
+    error: str | None
+    files: tuple[StagedCommitFile, ...]
 
 class RecoveryJournal:
     """SQLite-indexed metadata with portable per-transaction JSON manifests."""
@@ -257,6 +286,8 @@ class RecoveryJournal:
                         self._migrate_4_to_5(db)
                     elif version == 5:
                         self._migrate_5_to_6(db)
+                    elif version == 6:
+                        self._migrate_6_to_7(db)
                     version += 1
                     db.execute(f"PRAGMA user_version = {version}")
             self._create_indexes(db)
@@ -292,6 +323,20 @@ class RecoveryJournal:
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE RESTRICT
             );
+            CREATE TABLE staged_commit_batches (
+                batch_id TEXT PRIMARY KEY, status TEXT NOT NULL,
+                started_at TEXT NOT NULL, completed_at TEXT,
+                recovered_at TEXT, reviewed_at TEXT, error TEXT
+            );
+            CREATE TABLE staged_commit_files (
+                batch_id TEXT NOT NULL, file_index INTEGER NOT NULL,
+                absolute_path TEXT NOT NULL, staged_transaction_id TEXT NOT NULL,
+                progress TEXT NOT NULL, before_exists INTEGER NOT NULL,
+                after_exists INTEGER NOT NULL, before_sha256 TEXT, after_sha256 TEXT,
+                mode INTEGER, PRIMARY KEY (batch_id, file_index),
+                FOREIGN KEY (batch_id) REFERENCES staged_commit_batches(batch_id) ON DELETE CASCADE,
+                FOREIGN KEY (staged_transaction_id) REFERENCES transactions(id) ON DELETE CASCADE
+            );
             CREATE TABLE transaction_files (
                 transaction_id TEXT NOT NULL, file_index INTEGER NOT NULL,
                 absolute_path TEXT NOT NULL, relative_path TEXT NOT NULL,
@@ -314,6 +359,8 @@ class RecoveryJournal:
             CREATE INDEX IF NOT EXISTS idx_transactions_undone ON transactions(undone_at DESC);
             CREATE INDEX IF NOT EXISTS idx_transactions_disk ON transactions(committed_to_disk, timestamp_utc);
             CREATE INDEX IF NOT EXISTS idx_transaction_files_path ON transaction_files(absolute_path);
+            CREATE INDEX IF NOT EXISTS idx_staged_batches_status ON staged_commit_batches(status);
+            CREATE INDEX IF NOT EXISTS idx_staged_commit_files_path ON staged_commit_files(absolute_path);
         """)
 
     @staticmethod
@@ -353,6 +400,25 @@ class RecoveryJournal:
             updated_at TEXT NOT NULL,
             FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE RESTRICT
         )""")
+
+    @staticmethod
+    def _migrate_6_to_7(db):
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS staged_commit_batches (
+                batch_id TEXT PRIMARY KEY, status TEXT NOT NULL,
+                started_at TEXT NOT NULL, completed_at TEXT,
+                recovered_at TEXT, reviewed_at TEXT, error TEXT
+            );
+            CREATE TABLE IF NOT EXISTS staged_commit_files (
+                batch_id TEXT NOT NULL, file_index INTEGER NOT NULL,
+                absolute_path TEXT NOT NULL, staged_transaction_id TEXT NOT NULL,
+                progress TEXT NOT NULL, before_exists INTEGER NOT NULL,
+                after_exists INTEGER NOT NULL, before_sha256 TEXT, after_sha256 TEXT,
+                mode INTEGER, PRIMARY KEY (batch_id, file_index),
+                FOREIGN KEY (batch_id) REFERENCES staged_commit_batches(batch_id) ON DELETE CASCADE,
+                FOREIGN KEY (staged_transaction_id) REFERENCES transactions(id) ON DELETE CASCADE
+            );
+        """)
 
     @staticmethod
     def _manifest_json(value):
@@ -547,6 +613,204 @@ class RecoveryJournal:
         finally:
             if owns: connection.close()
 
+    def _batch_from_row(self, db, row):
+        if row is None:
+            return None
+        files = db.execute(
+            "SELECT * FROM staged_commit_files WHERE batch_id = ? ORDER BY file_index",
+            (row["batch_id"],),
+        ).fetchall()
+        values = tuple(StagedCommitFile(
+            item["batch_id"], item["file_index"], Path(item["absolute_path"]),
+            item["staged_transaction_id"], item["progress"],
+            bool(item["before_exists"]), bool(item["after_exists"]),
+            item["before_sha256"], item["after_sha256"], item["mode"],
+        ) for item in files)
+        return StagedCommitBatch(
+            row["batch_id"], row["status"], row["started_at"],
+            row["completed_at"], row["recovered_at"], row["reviewed_at"],
+            row["error"], values,
+        )
+
+    def get_staged_commit_batch(self, batch_id):
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM staged_commit_batches WHERE batch_id = ?", (batch_id,)
+            ).fetchone()
+            return self._batch_from_row(db, row)
+
+    def incomplete_staged_commit_batches(self):
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM staged_commit_batches WHERE status IN ('prepared','committing','rollback_required') ORDER BY started_at"
+            ).fetchall()
+            return tuple(self._batch_from_row(db, row) for row in rows)
+
+    def prepare_staged_commit_batch(self, transactions):
+        transactions = tuple(transactions)
+        if not transactions:
+            raise ValueError("A staged commit batch requires at least one transaction")
+        now = datetime.now(timezone.utc).isoformat()
+        batch_id = now.replace(":", "").replace("-", "") + "-" + uuid.uuid4().hex[:8]
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT 1 FROM staged_commit_batches WHERE status IN ('prepared','committing','rollback_required') LIMIT 1").fetchone():
+                raise RecoveryConflictError("An incomplete staged commit batch already requires recovery.")
+            db.execute(
+                "INSERT INTO staged_commit_batches (batch_id,status,started_at) VALUES (?, 'prepared', ?)",
+                (batch_id, now),
+            )
+            for index, transaction in enumerate(transactions):
+                row = db.execute(
+                    "SELECT absolute_path FROM active_overlays WHERE transaction_id = ?",
+                    (transaction.transaction_id,),
+                ).fetchone()
+                if row is None:
+                    raise RecoveryConflictError("A staged change is no longer active.", transaction)
+                item = transaction.files[0]
+                db.execute("""INSERT INTO staged_commit_files
+                    (batch_id,file_index,absolute_path,staged_transaction_id,progress,
+                     before_exists,after_exists,before_sha256,after_sha256,mode)
+                    VALUES (?,?,?,?, 'pending', ?,?,?,?,?)""", (
+                    batch_id, index, row["absolute_path"], transaction.transaction_id,
+                    int(bool(item.get("before_exists", True))),
+                    int(bool(item.get("after_exists", True))),
+                    item.get("before_sha256"), item.get("after_sha256"), item.get("mode"),
+                ))
+        return self.get_staged_commit_batch(batch_id)
+
+    def set_staged_batch_status(self, batch_id, status, *, expected=None, error=None):
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if expected:
+                marks = ",".join("?" for _ in expected)
+                cursor = db.execute(
+                    f"UPDATE staged_commit_batches SET status=?, error=? WHERE batch_id=? AND status IN ({marks})",
+                    (status, error, batch_id, *tuple(expected)),
+                )
+            else:
+                cursor = db.execute(
+                    "UPDATE staged_commit_batches SET status=?, error=? WHERE batch_id=?",
+                    (status, error, batch_id),
+                )
+            if cursor.rowcount != 1:
+                raise RecoveryConflictError("The staged commit batch state changed.")
+        return self.get_staged_commit_batch(batch_id)
+
+    def set_staged_file_progress(self, batch_id, file_index, progress, *, expected=None):
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if expected:
+                cursor = db.execute(
+                    "UPDATE staged_commit_files SET progress=? WHERE batch_id=? AND file_index=? AND progress=?",
+                    (progress, batch_id, file_index, expected),
+                )
+            else:
+                cursor = db.execute(
+                    "UPDATE staged_commit_files SET progress=? WHERE batch_id=? AND file_index=?",
+                    (progress, batch_id, file_index),
+                )
+            if cursor.rowcount != 1:
+                raise RecoveryConflictError("The staged commit file progress changed.")
+        return self.get_staged_commit_batch(batch_id)
+
+    @staticmethod
+    def _physical_hash(path):
+        try:
+            return sha256_bytes(Path(path).read_bytes())
+        except FileNotFoundError:
+            return None
+
+    def inspect_staged_commit_batch(self, batch):
+        values = []
+        for item in batch.files:
+            current = self._physical_hash(item.path)
+            before = item.before_sha256 if item.before_exists else None
+            after = item.after_sha256 if item.after_exists else None
+            if current == before:
+                state = "current equals before"
+            elif current == after:
+                state = "current equals after"
+            else:
+                state = "current differs from both"
+            values.append((item.path, state))
+        return tuple(values)
+
+    def finalize_staged_commit_batch(self, batch_id, *, recovered=False):
+        batch = self.get_staged_commit_batch(batch_id)
+        if batch is None:
+            raise RecoveryConflictError("The staged commit batch no longer exists.")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT status FROM staged_commit_batches WHERE batch_id=?", (batch_id,)).fetchone()
+            if row is None or row["status"] not in {"prepared", "committing", "rollback_required"}:
+                raise RecoveryConflictError("The staged commit batch is not recoverable.")
+            for item in batch.files:
+                cursor = db.execute("DELETE FROM active_overlays WHERE transaction_id=?", (item.transaction_id,))
+                if cursor.rowcount != 1:
+                    raise RecoveryConflictError("A staged overlay is no longer active.")
+                db.execute("UPDATE transactions SET committed_to_disk=1 WHERE id=?", (item.transaction_id,))
+                db.execute("UPDATE staged_commit_files SET progress='replaced' WHERE batch_id=? AND file_index=?", (batch_id, item.file_index))
+            db.execute(
+                "UPDATE staged_commit_batches SET status='completed', completed_at=?, recovered_at=? WHERE batch_id=?",
+                (now, now if recovered else None, batch_id),
+            )
+        transactions = tuple(self.get(item.transaction_id) for item in batch.files)
+        warnings = []
+        for transaction in transactions:
+            try: _json_write(transaction.directory / "manifest.json", transaction.manifest)
+            except Exception as exc: warnings.append(f"Portable manifest repair failed for {transaction.transaction_id}: {exc}")
+        try: self.emit_change()
+        except Exception as exc: warnings.append(f"History notification failed: {exc}")
+        return StagedCompletionResult(transactions, tuple(warnings))
+
+    def resolve_staged_commit_batch(self, batch, action):
+        batch = self.get_staged_commit_batch(batch.batch_id) or batch
+        states = self.inspect_staged_commit_batch(batch)
+        state_values = {state for _path, state in states}
+        if action == "review":
+            now = datetime.now(timezone.utc).isoformat()
+            with self._connect() as db:
+                db.execute("UPDATE staged_commit_batches SET status='reviewed', reviewed_at=? WHERE batch_id=? AND status IN ('prepared','committing','rollback_required')", (now, batch.batch_id))
+            self.emit_change(); return self.get_staged_commit_batch(batch.batch_id)
+        if "current differs from both" in state_values:
+            raise RecoveryConflictError("A file differs from both batch snapshots; automatic recovery is unsafe.", states=states)
+        paths = [item.path for item in batch.files]
+        try:
+            with self.locks.acquire_many(paths):
+                refreshed = self.get_staged_commit_batch(batch.batch_id)
+                locked_states = self.inspect_staged_commit_batch(refreshed)
+                if tuple(state for _path, state in locked_states) != tuple(state for _path, state in states):
+                    raise RecoveryConflictError("Disk state changed while recovery was starting.", states=locked_states)
+                if action == "forward":
+                    for item in refreshed.files:
+                        transaction = self.get(item.transaction_id)
+                        data = self.snapshot_path(transaction, "after").read_bytes()
+                        if sha256_bytes(data) != item.after_sha256:
+                            raise RecoveryConflictError("An after snapshot is missing or damaged.")
+                        _write_snapshot_to_disk(item.path, data, item.mode)
+                    return self.finalize_staged_commit_batch(refreshed.batch_id, recovered=True)
+                if action == "rollback":
+                    for item in refreshed.files:
+                        transaction = self.get(item.transaction_id)
+                        if item.before_exists:
+                            data = self.snapshot_path(transaction, "before").read_bytes()
+                            if sha256_bytes(data) != item.before_sha256:
+                                raise RecoveryConflictError("A before snapshot is missing or damaged.")
+                            _write_snapshot_to_disk(item.path, data, item.mode)
+                        elif item.path.exists():
+                            item.path.unlink(); _fsync_directory(item.path.parent)
+                    now = datetime.now(timezone.utc).isoformat()
+                    with self._connect() as db:
+                        db.execute("BEGIN IMMEDIATE")
+                        db.execute("UPDATE staged_commit_files SET progress='rolled_back' WHERE batch_id=?", (refreshed.batch_id,))
+                        db.execute("UPDATE staged_commit_batches SET status='aborted', recovered_at=? WHERE batch_id=?", (now, refreshed.batch_id))
+                    self.emit_change(); return self.get_staged_commit_batch(refreshed.batch_id)
+        except PathLockError as exc:
+            raise RecoveryConflictError(str(exc), states=states) from exc
+        raise ValueError(action)
+
     def active_overlays(self):
         with self._connect() as db:
             rows = db.execute("SELECT * FROM active_overlays ORDER BY absolute_path").fetchall()
@@ -601,12 +865,20 @@ class RecoveryJournal:
                 db.execute("UPDATE transactions SET status = ?, superseded_at = ? WHERE id = ? AND committed_to_disk = 0",
                            (TransactionStatus.SUPERSEDED.value, now.isoformat(), old["transaction_id"]))
         transaction = self.get(txid)
-        _json_write(directory / "manifest.json", transaction.manifest)
+        warnings = []
+        try:
+            _json_write(directory / "manifest.json", transaction.manifest)
+        except Exception as exc:
+            warnings.append(f"Portable manifest repair failed for {transaction.transaction_id}: {exc}")
         if old:
             old_tx = self.get(old["transaction_id"])
-            if old_tx: _json_write(old_tx.directory / "manifest.json", old_tx.manifest)
-        self.emit_change()
-        return transaction
+            if old_tx:
+                try: _json_write(old_tx.directory / "manifest.json", old_tx.manifest)
+                except Exception as exc:
+                    warnings.append(f"Portable manifest repair failed for {old_tx.transaction_id}: {exc}")
+        try: self.emit_change()
+        except Exception as exc: warnings.append(f"History notification failed: {exc}")
+        return StagedWriteResult(transaction, tuple(warnings))
 
     def complete_staged_commits(self, transactions):
         """Commit authoritative state before fallible mirror maintenance."""
@@ -954,8 +1226,10 @@ class RecoveryJournal:
     def prune(self):
         all_transactions=self.transactions(); latest_undo=self.latest_undo(); latest_redo=self.latest_redo()
         active_overlay_ids={tx.transaction_id for _path,tx,_signature in self.active_overlays()}
+        batch_transaction_ids={item.transaction_id for batch in self.incomplete_staged_commit_batches() for item in batch.files}
         protected={item.transaction_id for item in all_transactions if item.pinned or item.status in INCOMPLETE_STATES or item.status == TransactionStatus.UNDONE.value}
         protected.update(active_overlay_ids)
+        protected.update(batch_transaction_ids)
         if latest_undo: protected.add(latest_undo.transaction_id)
         if latest_redo: protected.add(latest_redo.transaction_id)
         active=[item for item in all_transactions if item.status in {TransactionStatus.COMMITTED.value,TransactionStatus.REDONE.value}]

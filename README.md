@@ -188,7 +188,7 @@ When disk state does not match the expected hash, PyBrowser refuses automatic re
 - Method-kind conversion currently requires a single-line signature.
 - Categories only exist when a Member supplies metadata or qualifies for an inferred category.
 - Structural undo and redo currently operate on transactions whose file states match exact hashes.
-- Multi-file disk transactions now validate and lock all candidates before replacement and roll back earlier replacements after a later failure. Explicit per-file crash progress and complete-forward recovery remain planned.
+- Staged Commit Selected and Commit All use durable commit batches with per-file pending, replacing, replaced, and rolled-back progress. Restart recovery classifies all-before, all-after, mixed, and foreign disk states and offers complete-forward, complete-rollback, or manual review.
 - Durable staging, atomic Commit All, and per-file Commit Selected are implemented. Staged deletion, rename/move, and type-check mirror materialization remain planned.
 - PySide6 GUI tests require a Qt-capable environment. The offscreen platform is recommended for CI.
 - Shared path locks coordinate PyBrowser saves, creation, undo, and redo, but cannot prevent an unrelated program from modifying a file at the exact instant of replacement. A final stable signature check reduces this window.

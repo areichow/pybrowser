@@ -42,6 +42,7 @@ from .member_projection import MemberProjection, file_to_editor_offset, project_
 from .source_write_service import SaveRequest, SourceConflictError, SourcePostCommitError, WriteMode
 from .widgets.structural_history import StructuralHistoryWindow
 from .widgets.staged_changes import StagedChangesWindow
+from .widgets.staged_commit_recovery import StagedCommitRecoveryWindow
 
 # PySide6 exposes ExtraSelection through QTextEdit, not QPlainTextEdit.
 from PySide6.QtWidgets import QTextEdit
@@ -249,6 +250,8 @@ class MainWindow(QMainWindow):
         commit_staged_action.triggered.connect(self.commit_staged_changes)
         view_staged_action = QAction("View Staged Changes", self)
         view_staged_action.triggered.connect(self.show_staged_changes)
+        recover_staged_action = QAction("Recover Interrupted Commit...", self)
+        recover_staged_action.triggered.connect(self.show_staged_commit_recovery)
         abandon_staged_action = QAction("Abandon Staged Changes...", self)
         abandon_staged_action.triggered.connect(self.abandon_staged_changes)
         find_action = QAction("Find", self)
@@ -310,6 +313,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.auto_commit_action)
         file_menu.addAction(commit_staged_action)
         file_menu.addAction(view_staged_action)
+        file_menu.addAction(recover_staged_action)
         file_menu.addAction(abandon_staged_action)
         file_menu.addSeparator()
         history_action = QAction("Structural History...", self)
@@ -1988,6 +1992,17 @@ class MainWindow(QMainWindow):
         if value.startswith("added"): return "add_method"
         return "structural_edit"
 
+    def show_staged_commit_recovery(self):
+        if not self.workspace.journal:
+            return
+        self.child_windows = [window for window in self.child_windows if isValid(window)]
+        existing = next((window for window in self.child_windows
+                         if isinstance(window, StagedCommitRecoveryWindow) and window.isVisible()), None)
+        if existing is not None:
+            existing.refresh(); existing.raise_(); existing.activateWindow(); return
+        window = StagedCommitRecoveryWindow(self.workspace)
+        window.show(); self.child_windows.append(window)
+
     def show_staged_changes(self):
         if not self.workspace.journal:
             QMessageBox.information(self, "Staged Changes", "Open a World before viewing staged changes.")
@@ -2010,6 +2025,17 @@ class MainWindow(QMainWindow):
     def _check_incomplete_recovery(self):
         journal = self.workspace.journal
         if not journal: return
+        batches = journal.incomplete_staged_commit_batches()
+        if batches:
+            answer = QMessageBox.question(
+                self, "Interrupted staged commit",
+                f"PyBrowser found {len(batches)} interrupted staged commit batch(es). Open recovery now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self.show_staged_commit_recovery()
+            return
         incomplete = journal.incomplete()
         if not incomplete: return
         details = []

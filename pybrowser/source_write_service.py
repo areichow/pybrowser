@@ -265,13 +265,14 @@ class SourceWriteService:
                     before_exists = True
                 else:
                     before = b""; mode = 0o644; before_exists = False
-                transaction = self.journal.record_staged_write(
+                staged_write = self.journal.record_staged_write(
                     path, before, after, disk_signature=baseline,
                     operation=str(request.operation), description=request.description,
                     encoding=request.document.encoding, newline=request.document.newline,
                     mode=mode, before_exists=before_exists,
                     location_before=request.location_before, location_after=request.location_after,
                 )
+                transaction = staged_write.transaction
                 self.source_store.stage_bytes(
                     path, after, encoding=request.document.encoding, mode=mode,
                     disk_signature=baseline, expected_visible_signature=store_visible,
@@ -282,56 +283,34 @@ class SourceWriteService:
             raise SourceConflictError(str(exc)) from exc
         document = self.source_store.read_document(path)
         if self.notify: self.notify(path, request.origin)
-        return SaveResult(document, transaction, (path,))
+        return SaveResult(document, transaction, (path,), staged_write.warnings)
 
-    def commit_staged(self, path: Path, origin=None) -> SaveResult:
+    def _commit_staged_paths(self, paths, origin=None):
         if self.source_store is None:
             raise SourceWriteError("No World source store is available.")
-        path = Path(path).resolve()
-        overlay = self.source_store.overlay(path)
-        if overlay is None or not overlay.transaction_id:
-            raise SourceConflictError(f"{path} is not staged.")
-        transaction = self.journal.get(overlay.transaction_id)
-        item = transaction.files[0]
-        try:
-            with self.locks.acquire(path):
-                if item.get("before_exists", True):
-                    try: current = stable_read(path)
-                    except OSError as exc: raise SourceConflictError(f"The staged file cannot be read: {exc}") from exc
-                    if current.signature != overlay.disk_signature:
-                        raise SourceConflictError(f"{path} changed on disk. The staged change was retained.")
-                    self._replace_bytes(path, overlay.data, overlay.mode, current.signature)
-                else:
-                    if path.exists():
-                        raise SourceConflictError(f"{path} now exists. The staged change was retained.")
-                    try: self._create_bytes_exclusive(path, overlay.data, overlay.mode)
-                    except FileExistsError as exc: raise SourceConflictError(f"{path} now exists. The staged change was retained.") from exc
-                completion = self.journal.complete_staged_commit(transaction)
-                transaction = completion.transactions[0]
-                self.source_store.discard(path, notify=False)
-        except PathLockError as exc:
-            raise SourceConflictError(str(exc)) from exc
-        refreshed = self._read_document(path)
-        if self.notify: self.notify(path, origin)
-        return SaveResult(refreshed, transaction, (path,), completion.warnings)
-
-    def commit_all_staged(self, origin=None):
-        if not self.source_store:
-            return ()
-        paths = tuple(self.source_store.staged_paths())
+        paths = tuple(Path(path).resolve() for path in paths)
         if not paths:
             return ()
         entries = []
         backups = []
+        batch = None
         try:
             with self.locks.acquire_many(paths):
+                if self.journal.incomplete_staged_commit_batches():
+                    raise SourceConflictError(
+                        "An interrupted staged commit requires recovery before another commit."
+                    )
                 for path in paths:
                     overlay = self.source_store.overlay(path)
+                    if overlay is None or not overlay.transaction_id:
+                        raise SourceConflictError(f"{path} is not staged.")
                     transaction = self.journal.get(overlay.transaction_id)
                     item = transaction.files[0]
                     before_exists = item.get("before_exists", True)
                     if before_exists:
-                        current = stable_read(path)
+                        try: current = stable_read(path)
+                        except OSError as exc:
+                            raise SourceConflictError(f"The staged file cannot be read: {exc}") from exc
                         if current.signature != overlay.disk_signature:
                             raise SourceConflictError(f"{path} changed on disk. All staged changes were retained.")
                         backups.append((path, True, current.data, current.mode))
@@ -340,22 +319,51 @@ class SourceWriteService:
                             raise SourceConflictError(f"{path} now exists. All staged changes were retained.")
                         backups.append((path, False, b"", None))
                     entries.append((path, overlay, transaction, before_exists))
+                batch = self.journal.prepare_staged_commit_batch(
+                    tuple(item[2] for item in entries)
+                )
+                batch = self.journal.set_staged_batch_status(
+                    batch.batch_id, "committing", expected={"prepared"}
+                )
                 replaced = []
                 try:
-                    for path, overlay, transaction, before_exists in entries:
+                    for file_index, (path, overlay, _transaction, before_exists) in enumerate(entries):
+                        self.journal.set_staged_file_progress(
+                            batch.batch_id, file_index, "replacing", expected="pending"
+                        )
                         if before_exists:
                             self._replace_bytes(path, overlay.data, overlay.mode, overlay.disk_signature)
                         else:
                             self._create_bytes_exclusive(path, overlay.data, overlay.mode)
                         replaced.append(path)
-                    completion = self.journal.complete_staged_commits(tuple(item[2] for item in entries))
+                        self.journal.set_staged_file_progress(
+                            batch.batch_id, file_index, "replaced", expected="replacing"
+                        )
+                    completion = self.journal.finalize_staged_commit_batch(batch.batch_id)
                     completed = completion.transactions
-                except Exception:
+                except Exception as exc:
+                    rollback_errors = []
                     for path, existed, data, mode in reversed(backups[:len(replaced)]):
                         try:
                             if existed: _write_snapshot_to_disk(path, data, mode)
                             elif path.exists(): path.unlink()
-                        except OSError: pass
+                        except OSError as rollback:
+                            rollback_errors.append(f"{path}: {rollback}")
+                    if batch is not None:
+                        if rollback_errors:
+                            self.journal.set_staged_batch_status(
+                                batch.batch_id, "rollback_required",
+                                expected={"committing"},
+                                error=str(exc) + "; rollback failed: " + "; ".join(rollback_errors),
+                            )
+                        else:
+                            for index in range(len(replaced)):
+                                self.journal.set_staged_file_progress(
+                                    batch.batch_id, index, "rolled_back"
+                                )
+                            self.journal.set_staged_batch_status(
+                                batch.batch_id, "aborted", expected={"committing"}, error=str(exc)
+                            )
                     raise
                 for path, _overlay, _transaction, _exists in entries:
                     self.source_store.discard(path, notify=False)
@@ -368,8 +376,23 @@ class SourceWriteService:
             results.append(SaveResult(document, transaction, (path,), completion.warnings))
         return tuple(results)
 
+    def commit_staged(self, path: Path, origin=None) -> SaveResult:
+        return self._commit_staged_paths((path,), origin)[0]
+
+    def commit_all_staged(self, origin=None):
+        paths = tuple(self.source_store.staged_paths()) if self.source_store else ()
+        return self._commit_staged_paths(paths, origin)
+
     def discard_staged(self, path: Path, origin=None):
         path = Path(path).resolve()
+        recovery_paths = {
+            item.path for batch in self.journal.incomplete_staged_commit_batches()
+            for item in batch.files
+        }
+        if path in recovery_paths:
+            raise SourceConflictError(
+                f"{path} belongs to an interrupted staged commit. Resolve the recovery batch first."
+            )
         try:
             with self.locks.acquire(path):
                 transaction = self.journal.discard_staged(path)

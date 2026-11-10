@@ -268,3 +268,8 @@ Overlay publication no longer emits an origin-less synchronous reload while `Sou
 ###### Revision 12.22.1 staged finalization authority and lifecycle hardening
 
 Staged commit finalization now commits authoritative SQLite state before best-effort JSON mirror reconstruction and history notification. Mirror or notification failures return post-commit warnings and never trigger physical rollback after SQLite has committed. Commit Selected, Commit All, Abandon Selected, and Abandon All route through Workspace unsaved-window protection. Staged Changes uses a bound Qt slot, `WA_DeleteOnClose`, and deleted-child pruning; its summary explains that only active overlays are listed and its diff labels the left side `baseline/` rather than current disk.
+
+
+##### Revision 12.23 durable staged commit batches
+
+Schema 7 adds `staged_commit_batches` and `staged_commit_files`. Commit Selected and Commit All persist a prepared batch before physical replacement, move it to committing, and record each file as pending, replacing, and replaced. Active overlays remain authoritative until every intended after image is present and SQLite finalization removes all overlay rows in one transaction. Startup classifies incomplete batches as all-before, all-after, mixed, or foreign. The Staged Commit Recovery window offers Restore Entire Before State, Complete Entire Transaction, and Mark for Manual Review; automatic actions acquire all path locks and recheck exact hashes. Virtual files use absence as the before state. Staged Changes marks affected overlays RECOVERY rather than CONFLICT. Staged-write JSON and notification failures are post-authority warnings, and the in-memory overlay is still published.

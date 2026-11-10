@@ -228,7 +228,7 @@ def test_schema_user_version_is_current(tmp_path):
     world=tmp_path/'world'; world.mkdir(); journal=RecoveryJournal(world,tmp_path/'history')
     import sqlite3
     with sqlite3.connect(journal.database_path) as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 6
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 7
 
 def _create_legacy_database(path, version):
     import sqlite3
@@ -268,7 +268,7 @@ def test_real_schema_1_and_2_databases_migrate(tmp_path):
         _create_legacy_database(root / 'journal.sqlite3', version)
         journal = RecoveryJournal(world, history)
         with sqlite3.connect(journal.database_path) as db:
-            assert db.execute('PRAGMA user_version').fetchone()[0] == 6
+            assert db.execute('PRAGMA user_version').fetchone()[0] == 7
             columns = {row[1] for row in db.execute('PRAGMA table_info(transactions)')}
             assert {'undone_at', 'redone_at', 'post_commit_error', 'post_commit_error_at'} <= columns
             indexes = {row[1] for row in db.execute('PRAGMA index_list(transactions)')}

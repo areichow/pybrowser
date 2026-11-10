@@ -269,3 +269,13 @@ def test_staged_finalization_housekeeping_returns_warnings():
     assert "Portable manifest repair failed" in recovery
     assert "History notification failed" in recovery
     assert "completion.warnings" in service
+
+
+def test_staged_commit_recovery_ui_and_recovery_marker_exist():
+    recovery = Path("pybrowser/widgets/staged_commit_recovery.py").read_text(encoding="utf-8")
+    staged = Path("pybrowser/widgets/staged_changes.py").read_text(encoding="utf-8")
+    main = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    for label in ("Restore Entire Before State", "Complete Entire Transaction", "Mark for Manual Review"):
+        assert label in recovery
+    assert 'marker = "RECOVERY  "' in staged
+    assert "show_staged_commit_recovery" in main

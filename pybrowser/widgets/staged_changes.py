@@ -25,6 +25,7 @@ class StagedChange:
     before_exists: bool
     conflict: bool
     conflict_detail: str
+    recovery_batch_id: str | None = None
 
     @property
     def kind(self):
@@ -106,12 +107,20 @@ class StagedChangesWindow(QMainWindow):
         values = []
         if not self.workspace.journal:
             return values
+        recovery_paths = {
+            item.path: batch.batch_id
+            for batch in self.workspace.journal.incomplete_staged_commit_batches()
+            for item in batch.files
+        }
         for path, transaction, disk_signature in self.workspace.journal.active_overlays():
             item = transaction.files[0]
             before_exists = item.get("before_exists", True)
             conflict, detail = self._conflict(path, disk_signature, before_exists)
+            batch_id = recovery_paths.get(path.resolve())
+            if batch_id:
+                detail = f"Interrupted staged commit batch {batch_id} requires recovery"
             values.append(StagedChange(path, transaction, disk_signature,
-                                       before_exists, conflict, detail))
+                                       before_exists, conflict, detail, batch_id))
         return values
 
     def refresh(self):
@@ -126,10 +135,12 @@ class StagedChangesWindow(QMainWindow):
                 display_path = change.path.relative_to(root).as_posix() if root else str(change.path)
             except ValueError:
                 display_path = str(change.path)
-            marker = "CONFLICT  " if change.conflict else "STAGED  "
+            marker = "RECOVERY  " if change.recovery_batch_id else ("CONFLICT  " if change.conflict else "STAGED  ")
             item = self.list.addItem(marker + display_path)
             list_item = self.list.item(self.list.count() - 1)
-            if change.conflict:
+            if change.recovery_batch_id:
+                list_item.setForeground(QColor("#ffd166"))
+            elif change.conflict:
                 conflicts += 1
                 list_item.setForeground(QColor("#f07178"))
             else:
@@ -165,7 +176,7 @@ class StagedChangesWindow(QMainWindow):
         item = tx.files[0]
         self.detail.setText("\n".join((
             str(change.path),
-            f"State: {'CONFLICT' if change.conflict else 'ready to commit'}",
+            f"State: {'RECOVERY' if change.recovery_batch_id else ('CONFLICT' if change.conflict else 'ready to commit')}",
             f"Kind: {change.kind}",
             f"Operation: {tx.operation}",
             f"Description: {tx.description}",
@@ -175,7 +186,7 @@ class StagedChangesWindow(QMainWindow):
             f"Before: {item.get('before_sha256')}",
             f"Staged: {item.get('after_sha256')}",
         )))
-        self._set_selected_actions(True, change.conflict)
+        self._set_selected_actions(True, change.conflict or bool(change.recovery_batch_id))
         try:
             encoding = item.get("encoding") or "utf-8"
             before = self.workspace.journal.snapshot_path(tx, "before").read_text(
