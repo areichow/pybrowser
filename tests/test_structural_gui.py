@@ -60,7 +60,11 @@ def test_duplicate_then_rename_changes_only_inserted_method(tmp_path, app, monke
 
         assert path.read_text().count("def run(self):") == 2
         assert window.members.currentRow() == window.members.count() - 1
-        assert window.member.span.start == path.read_text().rindex("    def run(self):")
+        # Span offsets refer to Document.text, which preserves literal CRLF on
+        # Windows. Path.read_text() performs universal-newline translation and
+        # therefore cannot be used for offset comparisons.
+        assert window.member.span.start == window.doc.text.rindex("    def run(self):")
+        assert window.doc.source(window.member).lstrip().startswith("def run(self):")
 
         # Re-run the ambiguous label restoration directly, without starting
         # ProcessPoolExecutor or QFileSystemWatcher activity in this unit test.
@@ -71,7 +75,8 @@ def test_duplicate_then_rename_changes_only_inserted_method(tmp_path, app, monke
         )
         app.processEvents()
         assert window.members.currentRow() == window.members.count() - 1
-        assert window.member.span.start == path.read_text().rindex("    def run(self):")
+        assert window.member.span.start == window.doc.text.rindex("    def run(self):")
+        assert window.doc.source(window.member).lstrip().startswith("def run(self):")
 
         cursor = window.editor.textCursor()
         assert cursor.hasSelection() and cursor.selectedText() == "run"

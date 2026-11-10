@@ -200,3 +200,8 @@ When disk state does not match the expected hash, PyBrowser refuses automatic re
 - **12E** Journal-only Staging Overlay
 
 Detailed recovery design and transaction semantics are documented in `UNDO_PLAN.md`. Member indentation projection is documented in `INDENTATION_PLAN.md`.
+
+
+## Source span convention
+
+Member spans are offsets into the literal decoded `Document.text`. For CRLF files, carriage returns count toward those offsets. Code and tests must not compare a Member span with offsets obtained from `Path.read_text()`, because Python may translate CRLF to LF while reading. The reversible Member projection handles structural indentation separately for editor display.

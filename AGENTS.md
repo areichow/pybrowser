@@ -36,6 +36,7 @@ Use **Member** as the generic UI term. A Member can be a function, method, prope
 - `pybrowser/parser.py` creates structural scopes and Members.
 - `read_document()` must derive text, scopes, encoding, newline mode, and signature from one stable byte image.
 - Member spans exclude `# category:` metadata so category comments do not appear in Member editor text.
+- `Span` offsets are indexes into literal `Document.text`, including CR characters in CRLF files. Never compare them with offsets from `Path.read_text()`, which may perform universal-newline translation.
 
 ### Browser restoration
 

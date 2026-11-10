@@ -35,3 +35,13 @@ def test_replacement_preserves_unrelated_bytes():
 def test_invalid_source_reports_location():
     with pytest.raises(ParseError) as info:validate("def broken(:\n pass\n","x.py")
     assert info.value.line is not None
+
+
+
+def test_indented_member_span_uses_literal_document_offsets():
+    text = "class App:\r\n    def run(self):\r\n        return 1\r\n\r\n    def run(self):\r\n        return 2\r\n"
+    scope = next(item for item in build_index(Path("x.py"), text) if item.name == "App")
+    first, second = scope.members
+    assert first.span.start == text.index("    def run(self):")
+    assert second.span.start == text.rindex("    def run(self):")
+    assert text[second.span.start:second.span.end].lstrip().startswith("def run(self):")

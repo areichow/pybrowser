@@ -218,3 +218,8 @@ Document loads and saves now use stable byte images, cooperative path locks, and
 #### Revision 12.14 deterministic GUI testing and duplicate restoration
 
 The focused Duplicate Member GUI regression disables unrelated process-pool indexing and filesystem watchers, converts unexpected modal dialogs into immediate test failures, and tears down Qt windows explicitly. Duplicate-label restoration initializes the complete matching-row set before selecting a valid source-order fallback. Indexing workers no longer catch BaseException.
+
+
+#### Revision 12.15 literal Document offset correction
+
+The focused Duplicate Member regression now compares the selected Member span with literal `Document.text`, not `Path.read_text()`. On Windows, universal-newline translation removes CR characters and makes later offsets appear smaller than the parser's correct CRLF-preserving offsets. A CRLF parser regression fixes this contract.
