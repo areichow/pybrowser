@@ -279,3 +279,22 @@ def test_staged_commit_recovery_ui_and_recovery_marker_exist():
         assert label in recovery
     assert 'marker = "RECOVERY  "' in staged
     assert "show_staged_commit_recovery" in main
+
+
+def test_workspace_filters_deleted_shiboken_wrappers_before_qt_calls():
+    source = Path("pybrowser/workspace.py").read_text(encoding="utf-8")
+    assert "from shiboken6 import isValid" in source
+    assert "def _compact_windows" in source
+    assert "self._compact_windows()" in source
+    method = source[source.index("    def open_windows"):source.index(
+        "    def browser_count", source.index("    def open_windows"))]
+    assert "window.isHidden()" in method
+    assert "except RuntimeError" in method
+
+
+def test_window_menu_suppresses_shutdown_and_deletion_races():
+    source = Path("pybrowser/windowing.py").read_text(encoding="utf-8")
+    rebuild = source[source.index("    def rebuild"):source.index(
+        "    def disconnect_rebuild", source.index("    def rebuild"))]
+    assert "QApplication.closingDown()" in rebuild
+    assert "except RuntimeError" in rebuild

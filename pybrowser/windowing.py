@@ -57,19 +57,29 @@ def add_window_menu(menu_bar, window, workspace):
 
     @Slot()
     def rebuild():
+        if QApplication.closingDown():
+            return
         if not isValid(window) or not isValid(menu):
             return
-        menu.clear()
-        for number, target in enumerate(workspace.open_windows(), 1):
-            if not isValid(target):
-                continue
-            prefix = f"&{number} " if number <= 9 else f"{number} "
-            title = target.windowTitle().replace("[*]", "").strip() or target.__class__.__name__
-            action = menu.addAction(prefix + title)
-            action.setCheckable(True)
-            action.setChecked(target is window)
-            action.setProperty("window_number", number)
-            action.triggered.connect(lambda checked=False, item=target: workspace.activate_window(item))
+        try:
+            menu.clear()
+            targets = workspace.open_windows()
+            for number, target in enumerate(targets, 1):
+                if not isValid(target):
+                    continue
+                prefix = f"&{number} " if number <= 9 else f"{number} "
+                title = target.windowTitle().replace("[*]", "").strip() or target.__class__.__name__
+                action = menu.addAction(prefix + title)
+                action.setCheckable(True)
+                action.setChecked(target is window)
+                action.setProperty("window_number", number)
+                action.triggered.connect(
+                    lambda checked=False, item=target: workspace.activate_window(item)
+                )
+        except RuntimeError:
+            # A top-level window may be deleted while queued registry signals are
+            # unwinding. The next aboutToShow rebuild uses the compacted registry.
+            return
 
     def disconnect_rebuild(_object=None):
         try: workspace.windows_changed.disconnect(rebuild)

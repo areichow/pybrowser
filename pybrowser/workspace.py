@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QCoreApplication, QSettings, Signal
 from PySide6.QtWidgets import QApplication
+from shiboken6 import isValid
 
 from .recovery import RecoveryConflictError, RecoveryJournal
 from .source_write_service import SourceWriteService, WriteMode
@@ -136,7 +137,25 @@ class Workspace(QObject):
         if path.suffix.casefold() == ".py":
             self.world_changed.emit(self.effective_world())
 
+    @staticmethod
+    def _valid_window(window):
+        try:
+            return window is not None and isValid(window)
+        except RuntimeError:
+            return False
+
+    def _compact_windows(self):
+        """Drop deleted Shiboken wrappers without invoking a Qt method on them."""
+        self.windows = [window for window in self.windows if self._valid_window(window)]
+        if not self._valid_window(self.active_browser):
+            self.active_browser = next(
+                (window for window in reversed(self.windows)
+                 if getattr(window, "window_kind", "") == "browser"),
+                None,
+            )
+
     def register(self, window, kind="window"):
+        self._compact_windows()
         if window in self.windows:
             return
         window.window_kind = kind
@@ -144,22 +163,37 @@ class Workspace(QObject):
         if kind == "browser":
             self.active_browser = window
         window.destroyed.connect(self._window_destroyed)
-        self.windows_changed.emit()
+        if not QCoreApplication.closingDown():
+            self.windows_changed.emit()
 
     def open_windows(self):
-        return [window for window in self.windows if window is not None and not getattr(window, "isHidden", lambda: True)()]
+        self._compact_windows()
+        values = []
+        for window in self.windows:
+            try:
+                if not window.isHidden():
+                    values.append(window)
+            except RuntimeError:
+                continue
+        if len(values) != len(self.windows):
+            self._compact_windows()
+        return values
 
     def browser_count(self):
         return sum(1 for window in self.open_windows() if getattr(window, "window_kind", "") == "browser")
 
     def activate_window(self, window):
-        if window is None:
+        if not self._valid_window(window):
+            self._compact_windows()
             return
-        window.showNormal()
-        window.raise_()
-        window.activateWindow()
-        if getattr(window, "window_kind", "") == "browser":
-            self.active_browser = window
+        try:
+            window.showNormal()
+            window.raise_()
+            window.activateWindow()
+            if getattr(window, "window_kind", "") == "browser":
+                self.active_browser = window
+        except RuntimeError:
+            self._compact_windows()
 
     def quit_application(self):
         QApplication.instance().closeAllWindows()
@@ -221,18 +255,20 @@ class Workspace(QObject):
         return result, changed_paths
 
     def unregister(self, window, emit=True):
-        if window in self.windows:
-            self.windows.remove(window)
-        if self.active_browser is window:
-            self.active_browser = next((item for item in reversed(self.windows)
-                                        if getattr(item, "window_kind", "") == "browser"), None)
+        self.windows = [item for item in self.windows
+                        if item is not window and self._valid_window(item)]
+        if self.active_browser is window or not self._valid_window(self.active_browser):
+            self.active_browser = next(
+                (item for item in reversed(self.windows)
+                 if getattr(item, "window_kind", "") == "browser"),
+                None,
+            )
         if emit and not QCoreApplication.closingDown():
             self.windows_changed.emit()
 
-    def _window_destroyed(self, destroyed_object=None):
-        self.windows = [item for item in self.windows if item is not destroyed_object]
-        if self.active_browser is destroyed_object:
-            self.active_browser = next((item for item in reversed(self.windows)
-                                        if getattr(item, "window_kind", "") == "browser"), None)
+    def _window_destroyed(self, _destroyed_object=None):
+        # The QObject supplied by destroyed() is not guaranteed to be identical
+        # to the original Python wrapper. Compact by Shiboken validity instead.
+        self._compact_windows()
         if not QCoreApplication.closingDown():
             self.windows_changed.emit()

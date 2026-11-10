@@ -273,3 +273,8 @@ Staged commit finalization now commits authoritative SQLite state before best-ef
 ##### Revision 12.23 durable staged commit batches
 
 Schema 7 adds `staged_commit_batches` and `staged_commit_files`. Commit Selected and Commit All persist a prepared batch before physical replacement, move it to committing, and record each file as pending, replacing, and replaced. Active overlays remain authoritative until every intended after image is present and SQLite finalization removes all overlay rows in one transaction. Startup classifies incomplete batches as all-before, all-after, mixed, or foreign. The Staged Commit Recovery window offers Restore Entire Before State, Complete Entire Transaction, and Mark for Manual Review; automatic actions acquire all path locks and recheck exact hashes. Virtual files use absence as the before state. Staged Changes marks affected overlays RECOVERY rather than CONFLICT. Staged-write JSON and notification failures are post-authority warnings, and the in-memory overlay is still published.
+
+
+###### Revision 12.23.1 Qt top-level window registry hardening
+
+The Workspace window registry now compacts invalid Shiboken wrappers before invoking any Qt method. `destroyed(QObject*)` cleanup no longer relies on Python wrapper identity, which is not guaranteed to match the originally registered wrapper. `open_windows()`, activation, registration, unregistration, and active-Browser selection all validate wrappers with `shiboken6.isValid()`. Window-menu rebuilds suppress shutdown work and defensively tolerate a deletion race while queued registry signals unwind. GUI regressions close and delete Staged Changes, rebuild every Window menu, reopen Staged Changes, and delete Browser wrappers without terminal tracebacks.
