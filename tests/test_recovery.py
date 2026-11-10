@@ -482,3 +482,25 @@ def test_update_prepared_rebuilds_json_from_sqlite(tmp_path):
     mirror=json.loads((directory/'manifest.json').read_text())
     assert mirror['files'][0]['before_exists'] is False
     assert journal.get(manifest['transaction_id']).files[0]['before_exists'] is False
+
+
+def test_undo_uses_same_path_lock_as_source_writes(tmp_path):
+    from pybrowser.recovery import RecoveryConflictError
+    world=tmp_path/'world'; world.mkdir(); path=world/'app.py'; path.write_text('A = 1\n')
+    journal=RecoveryJournal(world,tmp_path/'history')
+    tx=SourceWriteService(journal).save_document(SaveRequest(read_document(path),'A = 2\n','save_file','save')).transaction
+    with journal.locks.acquire(path):
+        with __import__('pytest').raises(RecoveryConflictError):
+            journal.apply_transaction(tx,'undo')
+    assert path.read_text() == 'A = 2\n'
+    assert journal.get(tx.transaction_id).status == 'committed'
+
+
+def test_multi_path_locks_use_canonical_order_and_deduplicate(tmp_path):
+    from pybrowser.path_locks import PathLockService
+    locks=PathLockService(tmp_path/'locks')
+    first=tmp_path/'z.py'; second=tmp_path/'A.py'
+    with locks.acquire_many([first, second, first]) as acquired:
+        assert acquired == tuple(sorted({first.resolve(), second.resolve()}, key=lambda p: str(p).casefold()))
+        assert len(list((tmp_path/'locks').glob('*.lock'))) == 2
+    assert list((tmp_path/'locks').glob('*.lock')) == []

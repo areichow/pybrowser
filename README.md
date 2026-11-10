@@ -108,7 +108,7 @@ All source mutations pass through one `SourceWriteService`. The service:
 
 1. Validates the complete candidate with LibCST and Python's AST parser.
 2. Uses a stable byte read and SHA-256 signature to detect external changes.
-3. Acquires a cooperative per-path PyBrowser lock.
+3. Acquires a shared cooperative per-path PyBrowser lock used by saves, file creation, undo, and redo.
 4. Writes durable recovery metadata and a complete before snapshot.
 5. Performs a final signature check immediately before atomic replacement.
 6. Flushes source and snapshot data with `fsync()` where supported.
@@ -189,7 +189,7 @@ When disk state does not match the expected hash, PyBrowser refuses automatic re
 - Multi-file transaction creation and partial-commit recovery are planned for Stage 12D.
 - Journal-only staging and selective commit are planned for Stage 12E.
 - PySide6 GUI tests require a Qt-capable environment. The offscreen platform is recommended for CI.
-- Cooperative path locks coordinate PyBrowser writers, but cannot prevent an unrelated program from modifying a file at the exact instant of replacement. A final stable signature check reduces this window.
+- Shared path locks coordinate PyBrowser saves, creation, undo, and redo, but cannot prevent an unrelated program from modifying a file at the exact instant of replacement. A final stable signature check reduces this window.
 
 ## Roadmap
 

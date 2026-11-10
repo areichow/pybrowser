@@ -228,3 +228,8 @@ The focused Duplicate Member regression now compares the selected Member span wi
 #### Revision 12.16 duplicate rename-selection lifecycle
 
 The GUI regression now distinguishes durable structural selection from ephemeral editor selection. Duplicate Member must select the inserted occurrence and its identifier immediately. A subsequent general module reload must preserve the inserted occurrence, but the rename selection is explicitly reapplied before simulating typing.
+
+
+##### Revision 12.17 shared path-lock service
+
+Path locking is extracted into `PathLockService`. Source saves, exclusive file creation, undo, and redo now use the same journal-owned lock namespace. Multi-path acquisition deduplicates resolved paths and locks them in canonical case-folded order, which establishes the deadlock-avoidance rule required by Stage 12D. History restoration acquires every affected lock before claiming `undoing` or `redoing`, so lock contention leaves transaction state unchanged.

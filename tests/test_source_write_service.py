@@ -145,6 +145,7 @@ def test_final_signature_check_refuses_change_during_preparation(tmp_path, monke
 def test_cooperative_path_lock_rejects_second_writer(tmp_path):
     world,journal,service,notifications=service_for(tmp_path)
     path=world/'app.py'; path.write_text('A = 1\n')
-    with service._path_lock(path):
+    with journal.locks.acquire(path):
         with pytest.raises(SourceConflictError):
-            SourceWriteService(journal)._path_lock(path).__enter__()
+            service.save_document(SaveRequest(read_document(path), 'A = 2\n', 'save_file', 'save'))
+    assert journal.transactions() == ()

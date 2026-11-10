@@ -13,6 +13,7 @@ from enum import StrEnum
 from typing import TypedDict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from .path_locks import PathLockError, PathLockService
 
 try:
     from PySide6.QtCore import QStandardPaths
@@ -207,6 +208,7 @@ class RecoveryJournal:
         self.max_bytes = max(1, int(max_megabytes)) * 1024 * 1024
         self.root.mkdir(parents=True, exist_ok=True)
         self.database_path = self.root / "journal.sqlite3"
+        self.locks = PathLockService(self.root / "locks")
         metadata = self.root / "world.json"
         if not metadata.exists():
             _json_write(metadata, {"format": FORMAT_VERSION, "world_root": str(self.world_root)})
@@ -714,6 +716,15 @@ class RecoveryJournal:
         raise RecoveryConflictError("The selected recovery action is not safe for the current disk state.", transaction, self.inspect_state(transaction))
 
     def apply_transaction(self, transaction, direction):
+        paths = [_transaction_path(item) for item in transaction.files]
+        try:
+            with self.locks.acquire_many(paths):
+                return self._apply_transaction_locked(transaction, direction)
+        except PathLockError as exc:
+            current = self.get(transaction.transaction_id) or transaction
+            raise RecoveryConflictError(str(exc), current) from exc
+
+    def _apply_transaction_locked(self, transaction, direction):
         if direction not in {"undo", "redo"}: raise ValueError(direction)
         expected_statuses = {TransactionStatus.COMMITTED.value, TransactionStatus.REDONE.value} if direction == "undo" else {TransactionStatus.UNDONE.value}
         if transaction.status not in expected_statuses:
