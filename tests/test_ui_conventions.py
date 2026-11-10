@@ -359,3 +359,12 @@ def test_save_reuses_service_reparse_instead_of_reading_module_again():
         "    def _highlight_error", source.index("    def save(self):"))]
     assert "_display_document(result.document" in save
     assert "_open_module(path" not in save
+
+
+def test_body_only_browser_save_supplies_prepared_scopes_and_pre_suppresses_watcher():
+    source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    save = source[source.index("    def save(self):"):source.index(
+        "    def _highlight_error", source.index("    def save(self):"))]
+    assert "rebase_member_document" in save
+    assert "prepared_scopes=prepared_scopes" in save
+    assert save.index("suppress_directory_refresh_until") < save.index("save_document(")

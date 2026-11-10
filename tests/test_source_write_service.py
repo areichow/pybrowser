@@ -236,3 +236,18 @@ def test_overlay_document_commit_rejects_external_disk_change(tmp_path):
         service.save_document(SaveRequest(staged_document, "A = 3\n", "save_file", "commit overlay"))
     assert path.read_bytes() == b"EXTERNAL = 9\n"
     assert journal.transactions() == ()
+
+
+def test_prepared_scopes_skip_post_commit_structural_reparse(tmp_path, monkeypatch):
+    from pybrowser.parser import rebase_member_document, replacement
+    world, journal, service, notifications = service_for(tmp_path)
+    path = world / "app.py"; path.write_bytes(b"def run():\n    return 1\n")
+    document = read_document(path); member = document.scopes[0].members[0]
+    restored = "def run():\n    value = 2\n    return value\n"
+    candidate = replacement(document, member, restored)
+    scopes = rebase_member_document(document, member, restored, candidate)
+    monkeypatch.setattr(service, "_read_document", lambda _path: (_ for _ in ()).throw(AssertionError("reparsed")))
+    result = service.save_document(SaveRequest(
+        document, candidate, "save_member", "fast body save", prepared_scopes=scopes))
+    assert result.document.scopes == scopes
+    assert result.document.text == candidate

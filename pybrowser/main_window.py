@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QMenu, QMessageBox, QSplitter, QStatusBar, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
-from .parser import ParseError, read_document, replacement
+from .parser import ParseError, read_document, rebase_member_document, replacement
 from .project import ModuleEntry, World, open_world
 from .index_cache import ModuleIndexCache
 from .indexing import IndexSignals, IndexWorldTask, ModuleIndexResult
@@ -2074,18 +2074,26 @@ class MainWindow(QMainWindow):
         row = self.members.currentRow()
         restored_source = restore_member(self.member_projection, self.editor.toPlainText())
         candidate = replacement(self.doc, self.member, restored_source)
+        prepared_scopes = rebase_member_document(
+            self.doc, self.member, restored_source, candidate
+        )
+        import time
+        self.suppress_directory_refresh_until = time.monotonic() + 10.0
         try:
             result = self.workspace.write_service.save_document(SaveRequest(
                 self.doc, candidate, "save_member", f"Save Member {self.member.label}",
                 location_before=self._journal_location(),
                 location_after={"module": str(path), "scope": scope, "category": category, "member": self.member.label},
-                origin=self,
+                origin=self, prepared_scopes=prepared_scopes,
             ))
             # Saving is complete before any Browser selection signals are allowed.
             self.editor.document().setModified(False)
             self.setWindowModified(False)
             self.index_cache.invalidate(path)
+            semantic_started = __import__("time").perf_counter()
             semantic = analyze_source(result.document.path, result.document.text)
+            profile_log("save_semantic", path=path,
+                        elapsed_ms=f"{(__import__('time').perf_counter() - semantic_started) * 1000:.1f}")
             self._display_document(result.document, semantic,
                                    (scope, category, ""), fallback_row=row)
             self._update_module_tree_item(path)

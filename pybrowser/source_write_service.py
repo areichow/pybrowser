@@ -40,6 +40,7 @@ class SaveRequest:
     location_before: dict | None = None
     location_after: dict | None = None
     origin: object | None = None
+    prepared_scopes: tuple | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,12 +118,27 @@ class SourceWriteService:
     def _read_document(self, path):
         return self.source_store.read_document(path) if self.source_store else read_document(path)
 
-    def _post_commit_one(self, path, transaction, file_index, origin, candidate, encoding, newline):
+    def _post_commit_one(self, path, transaction, file_index, origin, candidate, encoding, newline,
+                         prepared_scopes=None):
         warnings = []
         if self.source_store:
             self.source_store.discard(path)
         try:
-            refreshed = self._read_document(path)
+            if prepared_scopes is not None:
+                import time
+                from .saving import stable_read
+                fast_started = time.perf_counter()
+                stable = self.source_store.read_stable(path) if self.source_store else stable_read(path)
+                refreshed = Document(
+                    path, candidate, encoding, newline,
+                    candidate.endswith(("\n", "\r")), stable.signature,
+                    prepared_scopes,
+                    self.source_store.disk_signature(path) if self.source_store else stable.signature,
+                )
+                profile_log("save_fast_document", path=path,
+                            elapsed_ms=f"{(time.perf_counter() - fast_started) * 1000:.1f}")
+            else:
+                refreshed = self._read_document(path)
         except Exception as exc:
             message = f"Reparse failed after commit: {exc}"
             transaction = self.journal.mark_post_commit_error(transaction, message)
@@ -217,6 +233,7 @@ class SourceWriteService:
             refreshed, transaction, item_warnings = self._post_commit_one(
                 path, transaction, file_index, request.origin or item.origin, item.text,
                 item.document.encoding, item.document.newline,
+                item.prepared_scopes,
             )
             documents.append(refreshed); warnings.extend(item_warnings)
         profile_log("save_post_commit", files=len(files),
@@ -304,7 +321,16 @@ class SourceWriteService:
         profile_log("stage_journal", path=path,
                     elapsed_ms=f"{(time.perf_counter() - journal_started) * 1000:.1f}")
         reparse_started = time.perf_counter()
-        document = self.source_store.read_document(path)
+        if request.prepared_scopes is not None:
+            stable = self.source_store.read_stable(path)
+            document = Document(
+                path, request.text, request.document.encoding, request.document.newline,
+                request.text.endswith(("\n", "\r")), stable.signature,
+                request.prepared_scopes, self.source_store.disk_signature(path),
+            )
+            profile_log("stage_fast_document", path=path)
+        else:
+            document = self.source_store.read_document(path)
         if self.notify: self.notify(path, request.origin)
         profile_log("stage_reparse_notify", path=path,
                     elapsed_ms=f"{(time.perf_counter() - reparse_started) * 1000:.1f}")

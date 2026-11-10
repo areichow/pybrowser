@@ -45,3 +45,31 @@ def test_indented_member_span_uses_literal_document_offsets():
     assert first.span.start == text.index("    def run(self):")
     assert second.span.start == text.rindex("    def run(self):")
     assert text[second.span.start:second.span.end].lstrip().startswith("def run(self):")
+
+
+def test_body_only_rebase_updates_following_offsets_without_reparse():
+    from pybrowser.parser import rebase_member_document
+    text = "class App:\n    def first(self):\n        return 1\n\n    def second(self):\n        return 2\n"
+    scopes = build_index(Path("x.py"), text)
+    document = Document(Path("x.py"), text, "utf-8", "\n", True, (0, 0, ""), scopes)
+    scope = next(item for item in scopes if item.name == "App")
+    first, second = scope.members
+    restored = "    def first(self):\n        value = 1\n        return value\n"
+    candidate = replacement(document, first, restored)
+    rebased = rebase_member_document(document, first, restored, candidate)
+    assert rebased is not None
+    new_scope = next(item for item in rebased if item.name == "App")
+    assert candidate[new_scope.members[0].span.start:new_scope.members[0].span.end] == restored
+    assert candidate[new_scope.members[1].span.start:new_scope.members[1].span.end].lstrip().startswith("def second")
+    assert new_scope.members[1].span.first == second.span.first + 1
+
+
+def test_header_change_refuses_body_only_rebase():
+    from pybrowser.parser import rebase_member_document
+    text = "def run(value):\n    return value\n"
+    scopes = build_index(Path("x.py"), text)
+    document = Document(Path("x.py"), text, "utf-8", "\n", True, (0, 0, ""), scopes)
+    member = scopes[0].members[0]
+    restored = "def renamed(value):\n    return value\n"
+    assert rebase_member_document(document, member, restored,
+                                  replacement(document, member, restored)) is None

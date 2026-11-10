@@ -246,3 +246,57 @@ def validate(text: str, filename: str) -> None:
         raise ParseError(str(exc), getattr(exc, "raw_line", None), getattr(exc, "raw_column", None)) from exc
     except SyntaxError as exc:
         raise ParseError(exc.msg, exc.lineno, exc.offset) from exc
+
+
+def rebase_member_document(document: Document, member: Member, restored_source: str, candidate: str):
+    """Return scopes adjusted for a body-only Member save, or None if unsafe.
+
+    The fast path is deliberately limited to functions/methods whose complete
+    declaration header is byte-for-byte unchanged. Candidate validation still
+    occurs at the SourceWriteService boundary.
+    """
+    if member.kind not in {Kind.FUNCTION, Kind.METHOD}:
+        return None
+
+    def header(source):
+        lines = source.splitlines(keepends=True)
+        depth = 0
+        values = []
+        saw_def = False
+        for line in lines:
+            values.append(line)
+            stripped = line.strip()
+            if stripped.startswith(("def ", "async def ")):
+                saw_def = True
+            if saw_def:
+                depth += line.count("(") + line.count("[") + line.count("{")
+                depth -= line.count(")") + line.count("]") + line.count("}")
+                if depth == 0 and stripped.endswith(":"):
+                    return "".join(values)
+        return None
+
+    old_source = document.source(member)
+    if header(old_source) != header(restored_source):
+        return None
+    old_length = member.span.end - member.span.start
+    char_delta = len(restored_source) - old_length
+    old_lines = old_source.count("\n")
+    new_lines = restored_source.count("\n")
+    line_delta = new_lines - old_lines
+    new_member_last = member.span.last + line_delta
+
+    scopes = []
+    for scope in document.scopes:
+        members = []
+        for item in scope.members:
+            span = item.span
+            if item == member:
+                span = Span(span.start, span.end + char_delta,
+                            span.first, new_member_last)
+            elif span.start >= member.span.end:
+                span = Span(span.start + char_delta, span.end + char_delta,
+                            span.first + line_delta, span.last + line_delta)
+            members.append(Member(item.scope, item.category, item.label, item.kind,
+                                  span, item.synthetic, item.tooltip))
+        scopes.append(Scope(scope.name, tuple(members), scope.parent))
+    return tuple(scopes)

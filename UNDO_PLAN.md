@@ -288,3 +288,8 @@ Workspace source-content notifications are separated from module-membership chan
 ###### Revision 12.24.1 asynchronous watcher refresh and save-path profiling
 
 The measured Django run showed that the remaining freezes were not module indexing: directory watcher handling synchronously rediscovered 2,942 modules and stat-checked the entire World on the Qt thread, taking 4.5 to 8.1 seconds. Directory refresh now runs in a coalescing `WorldRefreshTask` on the global Qt thread pool. Known Workspace writes suppress their duplicate file and directory watcher events, which also prevents Commit Selected from being mislabeled as an external change. Browser save reuses the `Document` already reparsed by `SourceWriteService` rather than reading and parsing the file again. Profiling now separates validation, durable disk/journal work, post-commit work, staging journal work, and watcher suppression.
+
+
+###### Revision 12.24.2 body-save fast document path
+
+Profiling on Django showed 2.4 seconds of each save in post-commit LibCST metadata reconstruction while initial full indexing competed for CPU. Body-only function and method saves now preserve the already-known structural model by rebasing exact Member spans and following line/character offsets when the complete declaration header is byte-identical. Full candidate LibCST and AST validation, stable SHA-256 conflict checks, durable journaling, atomic replacement, and semantic analysis remain mandatory. Header/decorator/signature edits and non-callable Members fall back to the complete structural reparse. Browser saves suppress directory watcher scans before replacement so an early QFileSystemWatcher event cannot begin a redundant World scan before the Workspace notification arrives.
