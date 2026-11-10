@@ -190,3 +190,11 @@ def test_duplicate_identifier_selection_occurs_after_occurrence_restoration():
     source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
     method = source[source.index("    def _apply_structural_edit"):source.index("    def _select_location", source.index("    def _apply_structural_edit"))]
     assert method.index("self._select_member_occurrence") < method.index("self._select_member_identifier()")
+
+
+def test_diagnostic_navigation_maps_literal_member_offset_into_projection():
+    source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    method = source[source.index("    def _select_line_result"):source.index("    def navigate_back", source.index("    def _select_line_result"))]
+    assert "file_to_editor_offset" in method
+    assert "self.member_projection.prefix" in method
+    assert method.index("self._select_browser_member(member)") < method.index("file_to_editor_offset")

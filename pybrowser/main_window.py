@@ -38,7 +38,7 @@ from .windowing import install_window_commands
 from .semantic import analyze_source
 from .semantic_queries import references_in_world
 from .diagnostic_aggregation import DiagnosticAggregation, decorate
-from .member_projection import MemberProjection, project_member, restore_member
+from .member_projection import MemberProjection, file_to_editor_offset, project_member, restore_member
 from .source_write_service import SaveRequest, SourceConflictError, SourcePostCommitError
 from .widgets.structural_history import StructuralHistoryWindow
 
@@ -1242,8 +1242,15 @@ class MainWindow(QMainWindow):
         member = self._member_for_file_offset(offset)
         if member:
             self._select_browser_member(member)
-            local = offset - member.span.start
-            end = local + len(query or "")
+            literal_source = self.doc.source(member)
+            local_file = max(0, offset - member.span.start)
+            local = file_to_editor_offset(
+                literal_source, local_file, self.member_projection.prefix
+            ) if self.member_projection.projected else local_file
+            end_file = local_file + len(query or "")
+            end = file_to_editor_offset(
+                literal_source, end_file, self.member_projection.prefix
+            ) if self.member_projection.projected else end_file
             self._select_editor_range(local, end if end > local else local)
 
     def navigate_back(self):

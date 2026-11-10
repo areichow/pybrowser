@@ -116,14 +116,24 @@ For tabs, visual columns and character offsets differ. Diagnostic navigation sho
 
 ## Implementation status
 
-Implemented in Revision 11.10 for the Browser Member editor and editable query windows. The preference **Dedent Member editor** defaults on. File View remains literal. Unsafe mixed-prefix Members automatically fall back to literal display and saving.
+**Complete in Revision 12.19.** Browser Member editors and editable query windows use the reversible projection, **Dedent Member editor** defaults on, and File View remains literal. Unsafe mixed-prefix Members fall back to literal display and saving.
 
-## Rollout
+Completion verification includes:
 
-Implement behind a preference named **Dedent Member editor** and default it on only after projection round-trip tests prove:
+- Parameterized round-trip invariants for module functions, class and nested-class methods, decorators, async methods, multiline signatures, blank lines, triple-quoted strings, continuation lines, nested functions and classes, and CRLF source.
+- Exact tab-prefix and unsafe mixed-prefix behavior.
+- Projected saves through `SourceWriteService` for UTF-8 CRLF and Latin-1 CRLF files.
+- Projection-aware diagnostic navigation that converts literal file offsets after the target Member projection is loaded.
+- Complete-module LibCST and AST validation, SHA-256 conflict checks, journaling, and atomic replacement.
 
-```python
-restore_member(project_member(source)) == original_member_source
-```
+## Consciously deferred UI enhancements
 
-for all parser fixtures and a representative real-world corpus. File View remains the escape hatch and source-of-truth display for unusual files.
+The indentation architecture is complete. These are optional UI refinements, not safety or correctness gaps:
+
+- Preserve an exact transient cursor selection across every watcher-driven or general module reload. Structural Member identity is preserved, but ephemeral `QTextCursor` selections may reset.
+- Display a specialized escaped-projection-indentation message when complete-module validation can only report the underlying Python syntax error.
+- Add visual-column presentation for tabs in diagnostic labels. Navigation maps character offsets correctly while Qt renders using the configured tab width.
+
+## Rollout result
+
+The preference remains enabled by default because the round-trip invariant is exercised across the complete fixture matrix. File View remains the escape hatch and literal source-of-truth display for unusual files.
