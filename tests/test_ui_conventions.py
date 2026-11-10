@@ -18,7 +18,8 @@ def test_main_interface_uses_member_language():
 def test_save_and_structural_reload_clear_modified_before_reselection():
     source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
     save = source[source.index("    def save(self):"):source.index("    def _highlight_error", source.index("    def save(self):"))]
-    assert save.index("setModified(False)") < save.index("_open_module(")
+    assert save.index("setModified(False)") < save.index("_display_document(")
+    assert "result.document" in save
     structural = source[source.index("    def _apply_structural_edit"):source.index("    def new_function", source.index("    def _apply_structural_edit"))]
     assert "fallback_row" in structural
     assert "_select_location" in structural
@@ -39,7 +40,8 @@ def test_unsaved_yellow_precedes_duplicate_warning_color():
 def test_world_refresh_preserves_complete_browser_bookmark():
     source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
     refresh = source[source.index("    def _refresh_world"):source.index("    def _file_changed", source.index("    def _refresh_world"))]
-    assert "_capture_browser_selection()" in refresh
+    assert "WorldRefreshTask" in refresh
+    assert "self.thread_pool.start" in refresh
     assert "effective_paths != prior_effective" in refresh
     assert "_schedule_module_index(path)" in refresh
     assert "_populate_module_tree()" not in refresh
@@ -326,3 +328,34 @@ def test_performance_profile_covers_large_world_hot_paths():
                   "module_index_result", "world_refresh_content_only", "save_member"):
         assert event in main
     assert 'timed("discover_modules"' in project
+
+
+def test_directory_watcher_scan_runs_off_qt_thread_and_coalesces():
+    source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    assert "class WorldRefreshTask(QRunnable)" in source
+    refresh = source[source.index("    def _refresh_world"):source.index(
+        "    def _file_changed", source.index("    def _refresh_world"))]
+    assert "self.refresh_running" in refresh
+    assert "self.refresh_again" in refresh
+    assert "self.thread_pool.start(WorldRefreshTask" in refresh
+    assert "open_world(self.world.root)" not in refresh
+
+
+def test_known_workspace_writes_suppress_duplicate_watcher_reload():
+    source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    file_changed = source[source.index("    def _file_changed"):source.index(
+        "    def _start_background_index", source.index("    def _file_changed"))]
+    workspace_changed = source[source.index("    def _workspace_file_changed"):source.index(
+        "    def _members_context_menu", source.index("    def _workspace_file_changed"))]
+    assert "recent_workspace_changes" in file_changed
+    assert "file_watcher_suppressed" in file_changed
+    assert "recent_workspace_changes[path]" in workspace_changed
+    assert "suppress_directory_refresh_until" in workspace_changed
+
+
+def test_save_reuses_service_reparse_instead_of_reading_module_again():
+    source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    save = source[source.index("    def save(self):"):source.index(
+        "    def _highlight_error", source.index("    def save(self):"))]
+    assert "_display_document(result.document" in save
+    assert "_open_module(path" not in save

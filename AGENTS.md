@@ -112,7 +112,8 @@ Folder indexing uses `ProcessPoolExecutor` under a Qt worker. Keep worker entry 
 Do not catch `BaseException` around worker results. `KeyboardInterrupt`, `SystemExit`, and other process-level exceptions should not be converted into ordinary diagnostics.
 
 GUI unit tests should disable process-pool indexing unless indexing itself is the subject of the test. Spawned Windows workers can otherwise keep pytest alive after a test window is closed.
-- Existing-module content changes must not publish a World/module-set change, rebuild the Modules tree, or restart full-World indexing.
+- Existing-module content changes must not publish a World/module-set change, rebuild the Modules tree, restart full-World indexing, or run full module discovery on the Qt thread.
+- QFileSystemWatcher directory events must be coalesced and scanned in a background QRunnable. Known Workspace writes must suppress their duplicate watcher events without suppressing later external edits.
 - Physical index-cache checks use cheap mtime/size stamps. SHA-256 remains mandatory at source-write, staging, conflict, snapshot, and recovery boundaries.
 - A full-index result for a path changed since that full run began must be ignored in favor of the newer single-module result.
 

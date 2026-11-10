@@ -12,6 +12,7 @@ from .parser import read_document, validate
 from .path_locks import PathLockError
 from .recovery import OperationKind, RecoveryJournal, RecoveryTransaction, _write_snapshot_to_disk
 from .saving import file_signature, stable_read
+from .performance import log as profile_log
 
 
 class WriteMode(StrEnum):
@@ -140,17 +141,23 @@ class SourceWriteService:
         return refreshed, transaction, tuple(warnings)
 
     def _commit_documents(self, request: MultiSaveRequest) -> MultiSaveResult:
+        import time
+        total_started = time.perf_counter()
         files = tuple(request.files)
         if not files:
             raise ValueError("A multi-file save requires at least one candidate")
         paths = tuple(Path(item.document.path).resolve() for item in files)
         if len(set(paths)) != len(paths):
             raise ValueError("A multi-file save cannot contain duplicate paths")
+        validate_started = time.perf_counter()
         for item, path in zip(files, paths):
             validate(item.text, str(path))
+        profile_log("save_validate", files=len(files),
+                    elapsed_ms=f"{(time.perf_counter() - validate_started) * 1000:.1f}")
         prepared = []
         replaced = []
         directory = manifest = after_paths = None
+        commit_started = time.perf_counter()
         try:
             with self.locks.acquire_many(paths):
                 for item, path in zip(files, paths):
@@ -201,6 +208,9 @@ class SourceWriteService:
                 f"The source files were replaced, but core journal finalization failed: {exc}",
                 RecoveryTransaction(directory, manifest), changed_paths=paths,
             ) from exc
+        profile_log("save_disk_and_journal", files=len(files),
+                    elapsed_ms=f"{(time.perf_counter() - commit_started) * 1000:.1f}")
+        post_started = time.perf_counter()
         documents = []
         warnings = list(maintenance_warnings)
         for file_index, (item, path, _stable, _after) in enumerate(prepared):
@@ -209,6 +219,10 @@ class SourceWriteService:
                 item.document.encoding, item.document.newline,
             )
             documents.append(refreshed); warnings.extend(item_warnings)
+        profile_log("save_post_commit", files=len(files),
+                    elapsed_ms=f"{(time.perf_counter() - post_started) * 1000:.1f}")
+        profile_log("save_service_total", files=len(files),
+                    elapsed_ms=f"{(time.perf_counter() - total_started) * 1000:.1f}")
         return MultiSaveResult(tuple(documents), transaction, paths, tuple(warnings))
 
     def _commit_document(self, request: SaveRequest) -> SaveResult:
@@ -232,11 +246,17 @@ class SourceWriteService:
         return self._commit_document(request)
 
     def stage_document(self, request: SaveRequest) -> SaveResult:
+        import time
+        total_started = time.perf_counter()
         if self.source_store is None:
             raise SourceWriteError("Manual Commit requires a World source store.")
         path = Path(request.document.path).resolve()
+        validate_started = time.perf_counter()
         validate(request.text, str(path))
+        profile_log("stage_validate", path=path,
+                    elapsed_ms=f"{(time.perf_counter() - validate_started) * 1000:.1f}")
         after = request.text.encode(request.document.encoding)
+        journal_started = time.perf_counter()
         try:
             with self.locks.acquire(path):
                 current = self.source_store.overlay(path)
@@ -281,8 +301,15 @@ class SourceWriteService:
                 )
         except PathLockError as exc:
             raise SourceConflictError(str(exc)) from exc
+        profile_log("stage_journal", path=path,
+                    elapsed_ms=f"{(time.perf_counter() - journal_started) * 1000:.1f}")
+        reparse_started = time.perf_counter()
         document = self.source_store.read_document(path)
         if self.notify: self.notify(path, request.origin)
+        profile_log("stage_reparse_notify", path=path,
+                    elapsed_ms=f"{(time.perf_counter() - reparse_started) * 1000:.1f}")
+        profile_log("stage_service_total", path=path,
+                    elapsed_ms=f"{(time.perf_counter() - total_started) * 1000:.1f}")
         return SaveResult(document, transaction, (path,), staged_write.warnings)
 
     def _commit_staged_paths(self, paths, origin=None):

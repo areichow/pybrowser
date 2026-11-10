@@ -1,5 +1,5 @@
 from pathlib import Path
-from PySide6.QtCore import QFileSystemWatcher, QPoint, QSettings, QSignalBlocker, QThreadPool, QTimer, Qt
+from PySide6.QtCore import QFileSystemWatcher, QObject, QPoint, QRunnable, QSettings, QSignalBlocker, QThreadPool, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QRadioButton,
@@ -50,6 +50,43 @@ from PySide6.QtWidgets import QTextEdit
 from shiboken6 import isValid
 QPlainTextEditExtraSelection = QTextEdit.ExtraSelection
 
+
+class WorldRefreshSignals(QObject):
+    finished = Signal(int, object, object, float)
+    failed = Signal(int, str)
+
+
+class WorldRefreshTask(QRunnable):
+    """Discover membership and cheap file stamps without blocking Qt."""
+
+    def __init__(self, generation, root, signals):
+        super().__init__()
+        self.generation = generation
+        self.root = Path(root)
+        self.signals = signals
+        self.setAutoDelete(True)
+
+    @Slot()
+    def run(self):
+        import time
+        started = time.perf_counter()
+        try:
+            world = open_world(self.root)
+            stamps = {}
+            for entry in world.modules:
+                try:
+                    stat = entry.path.stat()
+                    stamps[entry.path.resolve()] = (stat.st_mtime_ns, stat.st_size)
+                except OSError:
+                    stamps[entry.path.resolve()] = None
+            self.signals.finished.emit(
+                self.generation, world, stamps,
+                (time.perf_counter() - started) * 1000,
+            )
+        except OSError as exc:
+            self.signals.failed.emit(self.generation, str(exc))
+
+
 class MainWindow(QMainWindow):
     def __init__(self, path=None, workspace=None):
         super().__init__()
@@ -96,6 +133,15 @@ class MainWindow(QMainWindow):
         self.refresh_timer.setSingleShot(True)
         self.refresh_timer.setInterval(250)
         self.refresh_timer.timeout.connect(self._refresh_world)
+        self.refresh_generation = 0
+        self.refresh_running = False
+        self.refresh_again = False
+        self.refresh_signals = WorldRefreshSignals()
+        self.refresh_signals.finished.connect(self._refresh_world_finished)
+        self.refresh_signals.failed.connect(self._refresh_world_failed)
+        self.recent_workspace_changes = {}
+        self.suppress_directory_refresh_until = 0.0
+        self.pending_select_path = None
         self.watcher = QFileSystemWatcher(self)
         self.watcher.directoryChanged.connect(self._world_changed)
         self.watcher.fileChanged.connect(self._file_changed)
@@ -941,6 +987,9 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Cannot open module", str(exc))
             return
+        self._display_document(document, semantic, restore, fallback_row)
+
+    def _display_document(self, document, semantic, restore=None, fallback_row=None):
         self.internal_reload = True
         self.loading = True
         try:
@@ -951,7 +1000,7 @@ class MainWindow(QMainWindow):
             self.setWindowModified(False)
             with QSignalBlocker(self.scopes), QSignalBlocker(self.categories), QSignalBlocker(self.members):
                 self.scopes.clear()
-                
+            
                 for scope_item in self.doc.scopes:
                     label = display_scope(scope_item.name)
                     self.scopes.addItem(label)
@@ -1083,8 +1132,13 @@ class MainWindow(QMainWindow):
             self.watcher.addPath(str(self.doc.path))
 
     def _world_changed(self, _path):
-        if self.world and not self.world.single_file:
-            self.refresh_timer.start()
+        if not self.world or self.world.single_file:
+            return
+        import time
+        if time.monotonic() < self.suppress_directory_refresh_until:
+            profile_log("world_refresh_suppressed", reason="known_workspace_write")
+            return
+        self.refresh_timer.start()
 
     def _workspace_world_changed(self, world):
         if self.opening_world or world is None:
@@ -1124,31 +1178,49 @@ class MainWindow(QMainWindow):
     def _refresh_world(self):
         if not self.world or self.world.single_file:
             return
-        started = __import__("time").perf_counter()
-        bookmark = self._capture_browser_selection()
-        try:
-            physical_world = open_world(self.world.root)
-            old_paths = {entry.path.resolve() for entry in self.workspace.world.modules}
-            new_paths = {entry.path.resolve() for entry in physical_world.modules}
-            self.workspace.world = physical_world
-            effective = self.workspace.effective_world()
-            effective_paths = {entry.path.resolve() for entry in effective.modules}
-            prior_effective = {entry.path.resolve() for entry in self.world.modules}
-            if effective_paths != prior_effective or old_paths != new_paths:
-                self.workspace._effective_module_paths = frozenset(effective_paths)
-                self.workspace.module_set_changed.emit(effective)
-                self._watch_world()
-                profile_log("world_refresh_membership", modules=len(effective.modules),
-                            elapsed_ms=f"{(__import__('time').perf_counter() - started) * 1000:.1f}")
-                return
+        if self.refresh_running:
+            self.refresh_again = True
+            return
+        self.refresh_generation += 1
+        self.refresh_running = True
+        generation = self.refresh_generation
+        profile_log("world_refresh_submit", generation=generation, root=self.world.root)
+        self.thread_pool.start(WorldRefreshTask(
+            generation, self.world.root, self.refresh_signals
+        ))
+
+    @Slot(int, object, object, float)
+    def _refresh_world_finished(self, generation, physical_world, stamps, elapsed_ms):
+        if generation != self.refresh_generation or not self.world:
+            return
+        self.refresh_running = False
+        old_paths = {entry.path.resolve() for entry in self.workspace.world.modules}
+        new_paths = {entry.path.resolve() for entry in physical_world.modules}
+        self.workspace.world = physical_world
+        effective = self.workspace.effective_world()
+        effective_paths = {entry.path.resolve() for entry in effective.modules}
+        prior_effective = {entry.path.resolve() for entry in self.world.modules}
+        if effective_paths != prior_effective or old_paths != new_paths:
+            self.workspace._effective_module_paths = frozenset(effective_paths)
+            self.workspace.module_set_changed.emit(effective)
+            self._watch_world()
+            profile_log("world_refresh_membership", modules=len(effective.modules),
+                        elapsed_ms=f"{elapsed_ms:.1f}")
+        else:
             changed = []
             for entry in effective.modules:
                 path = entry.path.resolve()
-                stamp = self._path_stamp(path)
+                stamp = stamps.get(path)
+                if self.workspace.source_store.has_overlay(path):
+                    stamp = self.module_stamps.get(path)
                 if stamp != self.module_stamps.get(path):
                     self.module_stamps[path] = stamp
                     changed.append(path)
             for path in changed:
+                recent = self.recent_workspace_changes.get(path, 0.0)
+                import time
+                if time.monotonic() - recent < 3.0:
+                    continue
                 if self.doc and path == self.doc.path and not self.editor.document().isModified():
                     location = (self.member.scope, self.member.category, self.member.label) if self.member else None
                     self._open_module(path, location, fallback_row=self.members.currentRow())
@@ -1156,17 +1228,31 @@ class MainWindow(QMainWindow):
                     self.index_cache.invalidate(path)
                     self._schedule_module_index(path)
             profile_log("world_refresh_content_only", modules=len(effective.modules),
-                        changed=len(changed),
-                        elapsed_ms=f"{(__import__('time').perf_counter() - started) * 1000:.1f}")
-            if bookmark and self.doc and self.doc.path == bookmark["path"]:
-                cursor = self.editor.textCursor()
-                cursor.setPosition(min(bookmark["cursor"], len(self.editor.toPlainText())))
-                self.editor.setTextCursor(cursor)
-        except OSError as exc:
-            self.statusBar().showMessage(str(exc), 5000)
+                        changed=len(changed), elapsed_ms=f"{elapsed_ms:.1f}")
+        if self.pending_select_path is not None:
+            target = self.pending_select_path
+            self.pending_select_path = None
+            if target in effective_paths:
+                self._select_module_path(target)
+        if self.refresh_again:
+            self.refresh_again = False
+            self.refresh_timer.start()
+
+    @Slot(int, str)
+    def _refresh_world_failed(self, generation, message):
+        if generation == self.refresh_generation:
+            self.refresh_running = False
+            self.statusBar().showMessage(message, 5000)
 
     def _file_changed(self, path):
-        if self.doc and Path(path) == self.doc.path and not self.editor.document().isModified():
+        path = Path(path).resolve()
+        import time
+        recent = self.recent_workspace_changes.get(path, 0.0)
+        if time.monotonic() - recent < 3.0:
+            profile_log("file_watcher_suppressed", path=path, reason="known_workspace_write")
+            self._watch_current_file()
+            return
+        if self.doc and path == self.doc.path and not self.editor.document().isModified():
             self.statusBar().showMessage("Current module changed outside PyBrowser; reloading", 5000)
             location = (self.member.scope, self.member.category, self.member.label) if self.member else None
             self._open_module(self.doc.path, location, fallback_row=self.members.currentRow())
@@ -1596,6 +1682,9 @@ class MainWindow(QMainWindow):
 
     def _workspace_file_changed(self, path, origin):
         path = Path(path).resolve()
+        import time
+        self.recent_workspace_changes[path] = time.monotonic()
+        self.suppress_directory_refresh_until = time.monotonic() + 2.0
         self.changed_since_full_index.add(path)
         self.module_stamps[path] = self._path_stamp(path)
         if origin is self:
@@ -1968,8 +2057,8 @@ class MainWindow(QMainWindow):
                 created, b'"""Package initialization."""\n',
                 operation="create_package_init", description=f"Create {created.name}", origin=self,
             )
+            self.pending_select_path = created.resolve()
             self._refresh_world()
-            self._select_module_path(created)
             self.statusBar().showMessage(f"Staged {created}" if self.workspace.source_store.has_overlay(created) else f"Created {created}", 5000)
         except (OSError, StructuralEditError) as exc:
             QMessageBox.critical(self, "Cannot create __init__.py", str(exc))
@@ -1996,7 +2085,9 @@ class MainWindow(QMainWindow):
             self.editor.document().setModified(False)
             self.setWindowModified(False)
             self.index_cache.invalidate(path)
-            self._open_module(path, (scope, category, ""), fallback_row=row)
+            semantic = analyze_source(result.document.path, result.document.text)
+            self._display_document(result.document, semantic,
+                                   (scope, category, ""), fallback_row=row)
             self._update_module_tree_item(path)
             self.module_stamps[path.resolve()] = self._path_stamp(path)
             if bookmark and self.member:
