@@ -1,8 +1,8 @@
-# PyBrowser 0.12.24.6 Release Notes
+# PyBrowser 0.12.24.6.1 Release Notes
 
 Release date: 2026-11-10
 
-PyBrowser 0.12.24.6 is the first release checkpoint after completing the recovery journal, structural undo and redo, shared write service, Manual Commit overlay, staged-change review and recovery, and large-World responsiveness work.
+PyBrowser 0.12.24.6.1 is the first release checkpoint after completing the recovery journal, structural undo and redo, shared write service, Manual Commit overlay, staged-change review and recovery, and large-World responsiveness work.
 
 ## Highlights
 
@@ -13,7 +13,7 @@ PyBrowser 0.12.24.6 is the first release checkpoint after completing the recover
 - **Crash-safe staged commits:** Per-file durable progress and explicit recovery for interrupted multi-file commits.
 - **Shared Workspace:** Browser, File View, queries, indexing, references, and staged source operate on one effective World.
 - **Large-World performance:** Content-only refresh, asynchronous filesystem discovery, incremental indexing, known-write watcher suppression, and a callable-suite fast save path.
-- **Visible version:** Browser title bars now display `PyBrowser 0.12.24.6` so the running build is immediately identifiable.
+- **Visible version:** Browser title bars now display `PyBrowser 0.12.24.6.1` so the running build is immediately identifiable.
 
 ## Measured performance
 
