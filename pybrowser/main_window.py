@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QMenu, QMessageBox, QSplitter, QStatusBar, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
+from . import __version__
 from .parser import ParseError, read_document, rebase_member_document, replacement
 from .project import ModuleEntry, World, open_world
 from .index_cache import ModuleIndexCache
@@ -157,7 +158,7 @@ class MainWindow(QMainWindow):
         self.replace_dialog = None
         self.member_projection = MemberProjection("", "", False, "No Member selected")
         self.resize(1400, 900)
-        self.setWindowTitle("PyBrowser")
+        self.setWindowTitle(f"PyBrowser {__version__}")
         self._ui()
         self._actions()
         self._restore_window_state()
@@ -957,7 +958,7 @@ class MainWindow(QMainWindow):
             self._watch_world()
             self._remember_world(world.root if not world.single_file else world.modules[0].path)
             title = world.modules[0].path.name if world.single_file else world.root.name
-            self.setWindowTitle(title + "[*] - PyBrowser")
+            self.setWindowTitle(f"{title}[*] - PyBrowser {__version__}")
             self.statusBar().showMessage(f"Opened {len(world.modules)} Python module(s)", 5000)
             QTimer.singleShot(0, self._check_incomplete_recovery)
             if restore and isinstance(restore, tuple) and len(restore) == 4:

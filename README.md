@@ -1,6 +1,6 @@
-# PyBrowser
+# PyBrowser 0.12.24.6
 
-PyBrowser is a desktop structural browser and editor for Python source code. Its interface is inspired by Smalltalk browsers: instead of treating a project as a collection of large text files, PyBrowser lets you navigate a **World** through Modules, Scopes, Categories, and Members.
+PyBrowser 0.12.24.6 is a desktop structural browser and editor for Python source code. Its interface is inspired by Smalltalk browsers: instead of treating a project as a collection of large text files, PyBrowser lets you navigate a **World** through Modules, Scopes, Categories, and Members.
 
 PyBrowser is intended for developers who want fast structural navigation while retaining ordinary Python files, familiar editors, and explicit control over source changes. It does not introduce a proprietary project format.
 
@@ -22,6 +22,14 @@ Additional windows provide:
 - **References** from the native semantic index.
 - **Diagnostics** from native analysis and optional BasedPyright or Pyright runs.
 - **Structural History** with durable before and after snapshots, safe undo and redo, crash recovery, pinning, and snapshot export.
+
+## Release information
+
+- Current version: **0.12.24.6**
+- See [Release Notes](RELEASE_NOTES.md) for highlights, measured performance, validation, and known limitations.
+- See [Changelog](CHANGELOG.md) for the concise change history.
+- See [Roadmap](ROADMAP.md) for the next implementation milestones.
+- The main Browser title bar displays the running version.
 
 ## Requirements and installation
 
@@ -195,14 +203,7 @@ When disk state does not match the expected hash, PyBrowser refuses automatic re
 
 ## Roadmap
 
-- **12A** Recovery Journal
-- **12B** Structural Undo and Redo
-- **12C** Shared Write Service
-- **12D.0** Overlay-capable Source and Multi-file Disk Commit
-- **12E** Auto/Manual Commit and Journal-only Staging Overlay
-- **12D.1** Git Context and Git-oriented History
-
-Detailed recovery design and transaction semantics are documented in `UNDO_PLAN.md`. Member indentation projection is documented in `INDENTATION_PLAN.md`.
+The completed 12A through 12E foundation is summarized in the release notes. The next milestone is read-only Git context and Git-oriented history, followed by type-check overlay mirrors and staged delete/rename operations. See [ROADMAP.md](ROADMAP.md) for the ordered plan.
 
 
 ## Source span convention

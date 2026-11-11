@@ -387,3 +387,45 @@ def test_search_state_reset_does_not_destroy_active_member_projection():
         "    def find_next", source.index("    def execute_find"))]
     assert "member_projection = MemberProjection" not in reset
     assert "member_projection = MemberProjection" not in execute
+
+
+def test_main_title_bar_displays_package_version():
+    source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    app = Path("pybrowser/app.py").read_text(encoding="utf-8")
+    assert "from . import __version__" in source
+    assert 'self.setWindowTitle(f"PyBrowser {__version__}")' in source
+    assert 'PyBrowser {__version__}' in source
+    assert "app.setApplicationVersion(__version__)" in app
+    assert "app.setApplicationDisplayName" in app
+
+
+def test_release_documentation_checkpoint_is_consistent():
+    version = "0.12.24.6"
+    assert version in Path("README.md").read_text(encoding="utf-8")
+    assert version in Path("RELEASE_NOTES.md").read_text(encoding="utf-8")
+    assert version in Path("CHANGELOG.md").read_text(encoding="utf-8")
+    assert Path("ARCHITECTURE.md").exists()
+    assert Path("ROADMAP.md").exists()
+    assert not Path("UNDO_PLAN.md").exists()
+    assert not Path("INDENTATION_PLAN.md").exists()
+
+
+def test_main_title_bar_displays_package_version():
+    source = Path("pybrowser/main_window.py").read_text(encoding="utf-8")
+    app = Path("pybrowser/app.py").read_text(encoding="utf-8")
+    assert "from . import __version__" in source
+    assert 'self.setWindowTitle(f"PyBrowser {__version__}")' in source
+    assert 'PyBrowser {__version__}' in source
+    assert "app.setApplicationVersion(__version__)" in app
+    assert "app.setApplicationDisplayName" in app
+
+
+def test_release_documentation_checkpoint_is_consistent():
+    version = "0.12.24.6"
+    assert version in Path("README.md").read_text(encoding="utf-8")
+    assert version in Path("RELEASE_NOTES.md").read_text(encoding="utf-8")
+    assert version in Path("CHANGELOG.md").read_text(encoding="utf-8")
+    assert Path("ARCHITECTURE.md").exists()
+    assert Path("ROADMAP.md").exists()
+    assert not Path("UNDO_PLAN.md").exists()
+    assert not Path("INDENTATION_PLAN.md").exists()

@@ -193,7 +193,7 @@ Critical regression scenarios include:
 - Git check-in examples must be one line with a semicolon:
 
 ```bash
-git add pyproject.toml requirements.txt README.md AGENTS.md UNDO_PLAN.md pybrowser tests; git ci -m "Message"
+git add pyproject.toml requirements.txt README.md AGENTS.md ARCHITECTURE.md ROADMAP.md RELEASE_NOTES.md CHANGELOG.md pybrowser tests; git ci -m "Message"
 ```
 
 ## Planned direction

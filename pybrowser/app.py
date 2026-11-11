@@ -9,6 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
+from . import __version__
 from .main_window import MainWindow
 from .theme import apply_dark_theme
 
@@ -36,6 +37,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     app = QApplication(sys.argv[:1])
     app.setApplicationName("PyBrowser")
+    app.setApplicationDisplayName(f"PyBrowser {__version__}")
+    app.setApplicationVersion(__version__)
+    app.setOrganizationName("PyBrowser")
     app.setQuitOnLastWindowClosed(True)
     apply_dark_theme(app)
     interrupt_timer = install_console_interrupt(app)
