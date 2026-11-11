@@ -86,8 +86,8 @@ def _inferred_category(node, in_class: bool) -> str:
     if isinstance(node, cst.FunctionDef):
         return "as yet unclassified" if in_class else "-- functions --"
     if _is_main_guard(node):
-        return "Runnable"
-    return "Executable Code"
+        return "-- runnable --"
+    return "-- executable --"
 
 def _function_label(node: cst.FunctionDef) -> str:
     prefix = "async " if node.asynchronous else ""

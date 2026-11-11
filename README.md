@@ -4,7 +4,7 @@ PyBrowser is a desktop structural browser and editor for Python source code. Its
 
 PyBrowser is intended for developers who want fast structural navigation while retaining ordinary Python files, familiar editors, and explicit control over source changes. It does not introduce a proprietary project format.
 
-![Project Screenshot](screenshots/pybrowser.png)
+![PyBrowser browsing the Django repo](screenshots/pybrowser.png)
 
 ## What PyBrowser does
 
@@ -19,11 +19,18 @@ Selecting a Member opens only that source construct in the editor. PyBrowser val
 
 Additional windows provide:
 
-- **File View** for literal whole-file editing.
-- **Implementers** and **Senders** searches.
-- **References** from the native semantic index.
-- **Diagnostics** from native analysis and optional BasedPyright or Pyright runs.
-- **Structural History** with durable before and after snapshots, safe undo and redo, crash recovery, pinning, and snapshot export.
+**File View** for literal whole-file editing
+![PyBrowser File View](screenshots/FileView.png)
+**Implementers** and **Senders** searches.
+![PyBrowser Implementers of...](screenshots/implementers.png)
+**References** from the native semantic index.
+![PyBrowser References to...](screenshots/references.png)
+**Structural History** with durable before and after snapshots, safe undo and redo, crash recovery, pinning, and snapshot export.
+![PyBrowser Stuctural History](screenshots/StructuralHistory.png)
+![PyBrowser Staged Changes](screenshots/StagedChanges.png)
+**Diagnostics** from native analysis and optional BasedPyright or Pyright runs.
+![PyBrowser Diagnostics](screenshots/diagnostics.png)
+![PyBrowser showing BasedPyright checks](screenshots/diagnostics.png)
 
 ## Release information
 

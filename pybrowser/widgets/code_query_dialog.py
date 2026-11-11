@@ -14,7 +14,6 @@ class CodeQueryDialog(QMainWindow):
 
     def __init__(self, title, results, workspace, parent=None):
         super().__init__(None)
-        self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.workspace = workspace
         self.workspace.register(self, "query")
