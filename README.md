@@ -1,10 +1,10 @@
-# PyBrowser 0.12.24.6
+# PyBrowser
 
 PyBrowser is a desktop structural browser and editor for Python source code. Its interface is inspired by Smalltalk browsers: instead of treating a project as a collection of large text files, PyBrowser lets you navigate a **World** through Modules, Scopes, Categories, and Members.
 
 PyBrowser is intended for developers who want fast structural navigation while retaining ordinary Python files, familiar editors, and explicit control over source changes. It does not introduce a proprietary project format.
 
-![Project Screenshot](screenshot/pybrowser.png)
+![Project Screenshot](screenshots/pybrowser.png)
 
 ## What PyBrowser does
 
