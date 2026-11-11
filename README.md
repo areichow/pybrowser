@@ -29,7 +29,6 @@ Additional windows provide:
 ![PyBrowser Stuctural History](screenshots/StructuralHistory.png)
 ![PyBrowser Staged Changes](screenshots/StagedChanges.png)
 **Diagnostics** from native analysis and optional BasedPyright or Pyright runs.
-![PyBrowser Diagnostics](screenshots/diagnostics.png)
 ![PyBrowser showing BasedPyright checks](screenshots/diagnostics.png)
 
 ## Release information
